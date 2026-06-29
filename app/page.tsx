@@ -365,7 +365,17 @@ function NavButton({ active, onClick, label }: any) {
   );
 }
 
-function Input({ label, value, onChange, type = "text" }: any) {
+function Input({
+  label,
+  value,
+  onChange,
+  type = "text",
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  type?: string;
+}) {
   return (
     <label className="block">
       <span className="mb-1 block text-sm text-zinc-400">{label}</span>
@@ -379,7 +389,17 @@ function Input({ label, value, onChange, type = "text" }: any) {
   );
 }
 
-function Select({ label, value, onChange, options }: any) {
+function Select({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: string[];
+}) {
   return (
     <label className="block">
       <span className="mb-1 block text-sm text-zinc-400">{label}</span>
@@ -388,7 +408,7 @@ function Select({ label, value, onChange, options }: any) {
         onChange={(e) => onChange(e.target.value)}
         className="w-full rounded-2xl border border-zinc-800 bg-black p-4 text-lg text-white outline-none focus:border-orange-500"
       >
-        {options.map((option: string) => (
+        {options.map((option) => (
           <option key={option}>{option}</option>
         ))}
       </select>
