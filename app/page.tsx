@@ -1,9 +1,36 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
+import Image from "next/image";
 import { supabase } from "@/lib/supabase";
 
-const today = new Date().toISOString().slice(0, 10);
+function getLocalDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getCurrentMonthKey() {
+  return getLocalDateKey().slice(0, 7);
+}
+
+function addMonths(monthKey: string, amount: number) {
+  const [year, month] = monthKey.split("-").map(Number);
+  const date = new Date(year, month - 1 + amount, 1);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function formatMonthLabel(monthKey: string) {
+  const [year, month] = monthKey.split("-").map(Number);
+  return new Intl.DateTimeFormat("en-GB", { month: "long", year: "numeric" }).format(new Date(year, month - 1, 1));
+}
+
+function isDateInMonth(dateString: string, monthKey: string) {
+  return dateString.startsWith(`${monthKey}-`);
+}
+
+const today = getLocalDateKey();
 
 const theme = {
   page: "bg-[#252a34] text-[#f2f2f2]",
@@ -13,6 +40,63 @@ const theme = {
   muted: "text-[#b8bcc6]",
   faint: "text-[#8d929e]",
 };
+
+const incomeCategories = [
+  "Key Programming",
+  "Dealer Work",
+  "Shopify Sale",
+  "Locksmith",
+  "Bike Sales",
+  "Contractor Work",
+  "Other Income",
+];
+
+const expenseCategories = [
+  "Keys / Stock",
+  "Vehicle Stock Purchase",
+  "Parts",
+  "Consumables",
+  "Fuel",
+  "Vehicle Parts",
+  "Vehicle Repairs",
+  "MOT / Tax",
+  "AutoTrader",
+  "Shopify Fees",
+  "Advertising",
+  "Postage",
+  "Software",
+  "Phone",
+  "Internet",
+  "Insurance",
+  "Tools & Equipment",
+  "Diagnostic Equipment",
+  "Clothing / PPE",
+  "Training",
+  "Bank Charges",
+  "Miscellaneous",
+];
+
+function categoriesForAction(action: BankRow["action"]) {
+  if (action === "income") return incomeCategories;
+  if (action === "expense") return expenseCategories;
+  if (action === "drawings") return ["Drawings"];
+  return ["Transfer / Ignore"];
+}
+
+type Job = {
+  id: string; job_date: string; customer_name: string | null; dealer_name: string | null;
+  vehicle: string | null; registration: string | null; job_type: string | null;
+  amount_charged: number | string | null; payment_method: string | null;
+  payment_status: string | null; notes: string | null;
+};
+
+type Expense = {
+  id: string; expense_date: string; supplier: string | null; category: string | null;
+  description: string | null; amount: number | string | null; payment_method: string | null;
+  notes: string | null;
+};
+
+type BankTransaction = BankRow & { id?: string; created_at?: string };
 
 type BankRow = {
   transaction_key: string;
@@ -25,13 +109,63 @@ type BankRow = {
   category: string;
 };
 
+type TaxSettings = {
+  otherIncomeThisTaxYear: number;
+  personalAllowance: number;
+  incomeTaxBasicRate: number;
+  incomeTaxHigherRate: number;
+  basicRateLimit: number;
+  class4LowerLimit: number;
+  class4UpperLimit: number;
+  class4MainRate: number;
+  class4AdditionalRate: number;
+  taxSavingsAlreadySetAside: number;
+};
+
+type StockSettings = {
+  motorcycleStockCount: number;
+  motorcycleStockCostValue: number;
+  motorcycleExpectedSaleValue: number;
+  keyStockCount: number;
+  averageKeyCost: number;
+  averageKeyRetailPrice: number;
+};
+
+const defaultStockSettings: StockSettings = {
+  motorcycleStockCount: 0,
+  motorcycleStockCostValue: 0,
+  motorcycleExpectedSaleValue: 0,
+  keyStockCount: 0,
+  averageKeyCost: 0,
+  averageKeyRetailPrice: 0,
+};
+
+const defaultTaxSettings: TaxSettings = {
+  otherIncomeThisTaxYear: 0,
+  personalAllowance: 12570,
+  incomeTaxBasicRate: 0.2,
+  incomeTaxHigherRate: 0.4,
+  basicRateLimit: 37700,
+  class4LowerLimit: 12570,
+  class4UpperLimit: 50270,
+  class4MainRate: 0.06,
+  class4AdditionalRate: 0.02,
+  taxSavingsAlreadySetAside: 0,
+};
+
 export default function HomePage() {
-  const [jobs, setJobs] = useState<any[]>([]);
-  const [expenses, setExpenses] = useState<any[]>([]);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [bankTransactions, setBankTransactions] = useState<BankTransaction[]>([]);
   const [bankRows, setBankRows] = useState<BankRow[]>([]);
   const [view, setView] = useState<"home" | "jobs" | "expenses" | "reports" | "bank">("home");
   const [showForm, setShowForm] = useState<"job" | "expense" | null>(null);
   const [search, setSearch] = useState("");
+  const [selectedMonth, setSelectedMonth] = useState(getCurrentMonthKey);
+  const [taxSettings, setTaxSettings] = useState<TaxSettings>(defaultTaxSettings);
+  const [stockSettings, setStockSettings] = useState<StockSettings>(defaultStockSettings);
+  const [receiptName, setReceiptName] = useState("");
+  const [receiptPreview, setReceiptPreview] = useState("");
 
   const [job, setJob] = useState({
     job_date: today,
@@ -54,6 +188,7 @@ export default function HomePage() {
     amount: "",
     payment_method: "Bank Transfer",
     notes: "",
+    linked_job_or_bike: "",
   });
 
   useEffect(() => {
@@ -61,10 +196,30 @@ export default function HomePage() {
   }, []);
 
   async function loadData() {
-    const { data: jobsData } = await supabase.from("smartfobs_jobs").select("*").order("job_date", { ascending: false });
-    const { data: expensesData } = await supabase.from("smartfobs_expenses").select("*").order("expense_date", { ascending: false });
-    setJobs(jobsData || []);
-    setExpenses(expensesData || []);
+    const [jobsResult, expensesResult, bankResult] = await Promise.all([
+      supabase.from("smartfobs_jobs").select("*").order("job_date", { ascending: false }),
+      supabase.from("smartfobs_expenses").select("*").order("expense_date", { ascending: false }),
+      supabase.from("smartfobs_bank_transactions").select("*").order("transaction_date", { ascending: false }).limit(10),
+    ]);
+    setJobs((jobsResult.data || []) as Job[]);
+    setExpenses((expensesResult.data || []) as Expense[]);
+    setBankTransactions((bankResult.data || []) as BankTransaction[]);
+    const savedStock = window.localStorage.getItem("smartfobs-stock-settings");
+    if (savedStock) {
+      try {
+        setStockSettings({ ...defaultStockSettings, ...JSON.parse(savedStock) as Partial<StockSettings> });
+      } catch {
+        window.localStorage.removeItem("smartfobs-stock-settings");
+      }
+    }
+  }
+
+  function updateStockSetting(field: keyof StockSettings, value: number) {
+    setStockSettings((current) => {
+      const next = { ...current, [field]: Math.max(0, value) };
+      window.localStorage.setItem("smartfobs-stock-settings", JSON.stringify(next));
+      return next;
+    });
   }
 
   function openJob(type: string) {
@@ -109,9 +264,14 @@ export default function HomePage() {
   async function addExpense() {
     if (!expense.amount) return alert("Amount required");
 
+    const { linked_job_or_bike, ...expenseFields } = expense;
+    const linkedNote = linked_job_or_bike.trim() ? `Used for: ${linked_job_or_bike.trim()}` : "";
+    const combinedNotes = [expense.notes.trim(), linkedNote].filter(Boolean).join("\n");
     const { error } = await supabase.from("smartfobs_expenses").insert({
-      ...expense,
+      ...expenseFields,
       amount: Number(expense.amount),
+      notes: combinedNotes,
+      // TODO: Upload receipt files to the Supabase "receipts" bucket once receipt_url is added.
     });
 
     if (error) return alert(error.message);
@@ -124,8 +284,11 @@ export default function HomePage() {
       amount: "",
       payment_method: "Bank Transfer",
       notes: "",
+      linked_job_or_bike: "",
     });
 
+    setReceiptName("");
+    setReceiptPreview("");
     setShowForm(null);
     loadData();
   }
@@ -167,28 +330,29 @@ export default function HomePage() {
     return result.map((v) => v.trim().replace(/^"|"$/g, ""));
   }
 
-  function suggestAction(description: string, amount: number): "income" | "expense" | "drawings" | "ignore" {
-  const d = description.toLowerCase();
+  function suggestBankTreatment(description: string, amount: number): Pick<BankRow, "action" | "category"> {
+    const d = description.toLowerCase();
+    const contains = (...terms: string[]) => terms.some((term) => d.includes(term));
 
-  if (d.includes("dan byrne") || d.includes("drawings")) return "drawings";
-  if (d.includes("shopify")) return "ignore";
-  if (d.includes("natwest") || d.includes("transfer")) return "ignore";
-  if (amount > 0) return "income";
-  return "expense";
-}
-
-  function suggestCategory(description: string) {
-  const d = description.toLowerCase();
-
-  if (d.includes("dan byrne") || d.includes("drawings")) return "Drawings";
-  if (d.includes("post office") || d.includes("royal mail") || d.includes("postage")) return "Postage";
-  if (d.includes("shell") || d.includes("bp") || d.includes("esso") || d.includes("fuel")) return "Fuel";
-  if (d.includes("shopify")) return "Shopify";
-  if (d.includes("phone")) return "Phone";
-  if (d.includes("insurance")) return "Insurance";
-  if (d.includes("tool")) return "Tools";
-  return "Other";
-}
+    // When Shopify order import is added, change positive payouts to Ignore / Shopify Payout to avoid double counting.
+    if (d.includes("shopify") && amount > 0) return { action: "income", category: "Shopify Sale" };
+    if (d.includes("shopify") && amount < 0) return { action: "expense", category: "Shopify Fees" };
+    if (contains("dan byrne", "drawings")) return { action: "drawings", category: "Drawings" };
+    if (contains("sell your motorbike", "yesmoto", "software dev")) return { action: "income", category: "Contractor Work" };
+    if (contains("motorcycle", "moto", "dealer", "dg motorcycle")) return { action: "income", category: "Dealer Work" };
+    if (contains("bike sale", "vehicle sale", "sold bike")) return { action: "income", category: "Bike Sales" };
+    if (contains("autotrader", "auto trader")) return { action: "expense", category: "AutoTrader" };
+    if (contains("royal mail", "post office", "postage")) return { action: "expense", category: "Postage" };
+    if (contains("shell", "bp", "esso", "texaco", "fuel", "service station", "university way", "sf brighton", "brighton s/stn", "fbrighton")) return { action: "expense", category: "Fuel" };
+    if (contains("honda", "yamaha", "fowlers", "ebay", "parts")) return { action: "expense", category: "Parts" };
+    if (contains("screwfix", "toolstation", "machine mart")) return { action: "expense", category: "Tools & Equipment" };
+    if (contains("garden centre", "clothing", "workwear", "t shirt", "t-shirt")) return { action: "expense", category: "Clothing / PPE" };
+    if (contains("ee", "vodafone", "o2", "three")) return { action: "expense", category: "Phone" };
+    if (d.includes("insurance")) return { action: "expense", category: "Insurance" };
+    if (contains("natwest", "transfer", "savings")) return { action: "ignore", category: "Transfer / Ignore" };
+    if (amount > 0) return { action: "income", category: "Key Programming" };
+    return { action: "expense", category: "Miscellaneous" };
+  }
 
   async function handleBankCSV(file: File) {
     const text = await file.text();
@@ -209,12 +373,12 @@ export default function HomePage() {
         description,
         amount,
         balance,
-        action: suggestAction(description, amount),
-        category: suggestCategory(description),
+        ...suggestBankTreatment(description, amount),
       };
     });
 
-    setBankRows(parsed);
+    const needsReview = (row: BankRow) => row.category === "Miscellaneous" || row.category === "Other Income";
+    setBankRows(parsed.sort((a, b) => Number(needsReview(b)) - Number(needsReview(a))));
     setView("bank");
   }
 
@@ -231,53 +395,69 @@ export default function HomePage() {
       .from("smartfobs_bank_transactions")
       .select("transaction_key");
 
-    const existingKeys = new Set((existing || []).map((r: any) => r.transaction_key));
+    const existingKeys = new Set((existing || []).map((r: { transaction_key: string }) => r.transaction_key));
 
-    let imported = 0;
-    let skipped = 0;
+    let createdIncome = 0;
+    let createdExpenses = 0;
+    let skippedDuplicates = 0;
+    let ignoredOrDrawings = 0;
+    let failed = 0;
 
     for (const row of bankRows) {
       if (existingKeys.has(row.transaction_key)) {
-        skipped++;
+        skippedDuplicates++;
         continue;
       }
 
-      await supabase.from("smartfobs_bank_transactions").insert(row);
+      const { error: bankError } = await supabase.from("smartfobs_bank_transactions").insert(row);
+      if (bankError) {
+        failed++;
+        continue;
+      }
+      existingKeys.add(row.transaction_key);
 
       if (row.action === "income") {
-        await supabase.from("smartfobs_jobs").insert({
+        const { error } = await supabase.from("smartfobs_jobs").insert({
           job_date: row.transaction_date,
           customer_name: row.description,
           dealer_name: "",
           vehicle: "",
           registration: "",
-          job_type: "Bank Transfer",
-          amount_charged: row.amount,
+          job_type: row.category,
+          amount_charged: Math.abs(row.amount),
           payment_method: "Bank Transfer",
           payment_status: "Paid",
-          notes: `Imported from bank CSV: ${row.type}`,
+          notes: `Imported from bank CSV: ${row.type} · ${row.category}`,
           source: "Bank Import",
         });
-        imported++;
+        if (error) failed++;
+        else createdIncome++;
       }
 
       if (row.action === "expense") {
-        await supabase.from("smartfobs_expenses").insert({
+        const { error } = await supabase.from("smartfobs_expenses").insert({
           expense_date: row.transaction_date,
           supplier: row.description,
           category: row.category,
           description: row.description,
           amount: Math.abs(row.amount),
           payment_method: "Bank Transfer",
-          notes: `Imported from bank CSV: ${row.type}`,
+          notes: `Imported from bank CSV: ${row.type} · ${row.category}`,
         });
-        imported++;
+        if (error) failed++;
+        else createdExpenses++;
       }
 
-      if (row.action === "drawings" || row.action === "ignore") skipped++;
+      if (row.action === "drawings" || row.action === "ignore") ignoredOrDrawings++;
     }
 
-    alert(`Imported ${imported}. Skipped ${skipped}.`);
+    alert([
+      `Created income rows: ${createdIncome}`,
+      `Created expense rows: ${createdExpenses}`,
+      `Skipped duplicates: ${skippedDuplicates}`,
+      `Ignored / drawings rows: ${ignoredOrDrawings}`,
+      ...(failed ? [`Failed operations: ${failed}`] : []),
+    ].join("\n"));
     setBankRows([]);
     loadData();
   }
@@ -322,25 +502,115 @@ export default function HomePage() {
     a.href = url;
     a.download = `smartfobs-${type}.csv`;
     a.click();
+    URL.revokeObjectURL(url);
   }
 
   const totals = useMemo(() => {
-    const income = jobs.reduce((sum, j) => sum + Number(j.amount_charged || 0), 0);
-    const expenseTotal = expenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
-
-    const todayIncome = jobs.filter((j) => j.job_date === today).reduce((sum, j) => sum + Number(j.amount_charged || 0), 0);
-    const todayExpenses = expenses.filter((e) => e.expense_date === today).reduce((sum, e) => sum + Number(e.amount || 0), 0);
+    const now = new Date(`${today}T12:00:00`);
+    const startOfWeek = new Date(now);
+    const day = startOfWeek.getDay();
+    startOfWeek.setDate(startOfWeek.getDate() - (day === 0 ? 6 : day - 1));
+    const weekStart = startOfWeek.toISOString().slice(0, 10);
+    const thisYearsTaxStart = `${now.getFullYear()}-04-06`;
+    const taxStart = today >= thisYearsTaxStart ? thisYearsTaxStart : `${now.getFullYear() - 1}-04-06`;
+    const taxEnd = `${Number(taxStart.slice(0, 4)) + 1}-04-05`;
+    const sumJobs = (from: string, to = today) => jobs.filter((j) => j.job_date >= from && j.job_date <= to).reduce((sum, j) => sum + Number(j.amount_charged || 0), 0);
+    const sumExpenses = (from: string, to = today) => expenses.filter((e) => e.expense_date >= from && e.expense_date <= to).reduce((sum, e) => sum + Number(e.amount || 0), 0);
+    const period = (from: string, to = today) => {
+      const income = sumJobs(from, to);
+      const expensesTotal = sumExpenses(from, to);
+      return { income, expenses: expensesTotal, profit: income - expensesTotal };
+    };
+    const allIncome = jobs.reduce((sum, j) => sum + Number(j.amount_charged || 0), 0);
+    const allExpenses = expenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
+    const selectedMonthJobs = jobs.filter((job) => isDateInMonth(job.job_date, selectedMonth));
+    const selectedMonthExpenses = expenses.filter((expense) => isDateInMonth(expense.expense_date, selectedMonth));
+    const selectedMonthIncome = selectedMonthJobs.reduce((sum, job) => sum + Number(job.amount_charged || 0), 0);
+    const selectedMonthExpenseTotal = selectedMonthExpenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
 
     return {
-      income,
-      expenseTotal,
-      profit: income - expenseTotal,
-      todayIncome,
-      todayExpenses,
-      todayProfit: todayIncome - todayExpenses,
+      income: allIncome,
+      expenseTotal: allExpenses,
+      profit: allIncome - allExpenses,
+      today: period(today),
+      week: period(weekStart),
+      selectedMonth: {
+        income: selectedMonthIncome,
+        expenses: selectedMonthExpenseTotal,
+        profit: selectedMonthIncome - selectedMonthExpenseTotal,
+        jobs: selectedMonthJobs.length,
+      },
+      taxYear: period(taxStart, taxEnd),
+      taxStart,
+      taxEnd,
       jobCount: jobs.length,
     };
-  }, [jobs, expenses]);
+  }, [jobs, expenses, selectedMonth]);
+
+  const taxEstimate = useMemo(() => {
+    const businessProfit = totals.taxYear.profit;
+    const totalTaxableIncomeBeforeAllowance = businessProfit + taxSettings.otherIncomeThisTaxYear;
+    const taxableIncome = Math.max(0, totalTaxableIncomeBeforeAllowance - taxSettings.personalAllowance);
+    const basicRateIncome = Math.min(taxableIncome, taxSettings.basicRateLimit);
+    const higherRateIncome = Math.max(0, taxableIncome - taxSettings.basicRateLimit);
+    const incomeTax =
+      basicRateIncome * taxSettings.incomeTaxBasicRate +
+      higherRateIncome * taxSettings.incomeTaxHigherRate;
+
+    const class4MainBand = Math.max(
+      0,
+      Math.min(businessProfit, taxSettings.class4UpperLimit) - taxSettings.class4LowerLimit,
+    );
+    const class4AdditionalBand = Math.max(0, businessProfit - taxSettings.class4UpperLimit);
+    const class4NI =
+      class4MainBand * taxSettings.class4MainRate +
+      class4AdditionalBand * taxSettings.class4AdditionalRate;
+    const estimatedTotalTax = incomeTax + class4NI;
+    const recommendedTaxPot = estimatedTotalTax;
+
+    return {
+      businessProfit,
+      incomeTax,
+      class4NI,
+      estimatedTotalTax,
+      recommendedTaxPot,
+      taxPotDifference: taxSettings.taxSavingsAlreadySetAside - recommendedTaxPot,
+    };
+  }, [taxSettings, totals.taxYear.profit]);
+
+  const stockValues = useMemo(() => {
+    const motorcycleExpectedGrossProfit = stockSettings.motorcycleExpectedSaleValue - stockSettings.motorcycleStockCostValue;
+    const keyStockCostValue = stockSettings.keyStockCount * stockSettings.averageKeyCost;
+    const keyStockRetailValue = stockSettings.keyStockCount * stockSettings.averageKeyRetailPrice;
+    const keyStockExpectedGrossProfit = keyStockRetailValue - keyStockCostValue;
+    const totalStockCostValue = stockSettings.motorcycleStockCostValue + keyStockCostValue;
+    const totalPotentialRetailValue = stockSettings.motorcycleExpectedSaleValue + keyStockRetailValue;
+    return {
+      motorcycleExpectedGrossProfit,
+      keyStockCostValue,
+      keyStockRetailValue,
+      keyStockExpectedGrossProfit,
+      totalStockCostValue,
+      totalPotentialRetailValue,
+      totalPotentialGrossProfit: totalPotentialRetailValue - totalStockCostValue,
+      estimatedBusinessPosition: totals.profit + totalStockCostValue,
+    };
+  }, [stockSettings, totals.profit]);
+
+  const breakdowns = useMemo(() => {
+    const group = <T,>(rows: T[], label: (row: T) => string, value: (row: T) => number) =>
+      Object.entries(rows.reduce<Record<string, number>>((totals, row) => {
+        const key = label(row) || "Uncategorised";
+        totals[key] = (totals[key] || 0) + value(row);
+        return totals;
+      }, {})).sort((a, b) => b[1] - a[1]);
+    const monthJobs = jobs.filter((job) => isDateInMonth(job.job_date, selectedMonth));
+    const monthExpenses = expenses.filter((expense) => isDateInMonth(expense.expense_date, selectedMonth));
+    return {
+      income: group(monthJobs, (j) => j.job_type || "Other Income", (j) => Number(j.amount_charged || 0)),
+      expenses: group(monthExpenses, (e) => e.category || "Miscellaneous", (e) => Number(e.amount || 0)),
+    };
+  }, [jobs, expenses, selectedMonth]);
 
   const filteredJobs = jobs.filter((j) =>
     `${j.customer_name} ${j.dealer_name} ${j.vehicle} ${j.registration} ${j.job_type}`
@@ -353,6 +623,8 @@ export default function HomePage() {
       .toLowerCase()
       .includes(search.toLowerCase())
   );
+
+  const needsReviewCount = bankRows.filter((row) => row.category === "Miscellaneous" || row.category === "Other Income").length;
 
   function money(value: number) {
     return value.toLocaleString("en-GB", { style: "currency", currency: "GBP" });
@@ -385,9 +657,9 @@ export default function HomePage() {
             <section className={`rounded-3xl ${theme.card} p-5`}>
               <p className={`text-sm ${theme.muted}`}>Today</p>
               <p className={`mt-1 text-4xl font-black ${theme.accentText}`}>
-                {money(totals.todayIncome)}
+                {money(totals.today.income)}
               </p>
-              <p className={`mt-1 text-sm ${theme.faint}`}>Profit today: {money(totals.todayProfit)}</p>
+              <p className={`mt-1 text-sm ${theme.faint}`}>Profit today: {money(totals.today.profit)}</p>
             </section>
 
             <section className="grid grid-cols-2 gap-3">
@@ -429,12 +701,94 @@ export default function HomePage() {
 
         {view === "reports" && (
           <div className="space-y-4">
-            <section className="grid grid-cols-2 gap-3">
-              <Kpi title="Total Income" value={money(totals.income)} />
-              <Kpi title="Expenses" value={money(totals.expenseTotal)} />
-              <Kpi title="Profit" value={money(totals.profit)} />
-              <Kpi title="Jobs" value={String(totals.jobCount)} />
-            </section>
+            <ReportPeriod title="Today" totals={totals.today} money={money} />
+            <ReportPeriod title="This week" totals={totals.week} money={money} />
+            <Panel title="Selected Month">
+              <div className="space-y-4">
+                <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+                  <button type="button" onClick={() => setSelectedMonth((month) => addMonths(month, -1))} className={`min-h-12 rounded-xl ${theme.card} px-3 text-sm font-bold active:scale-[0.98]`}>
+                    Previous Month
+                  </button>
+                  <p className="min-w-28 text-center text-sm font-black">{formatMonthLabel(selectedMonth)}</p>
+                  <button type="button" onClick={() => setSelectedMonth((month) => addMonths(month, 1))} className={`min-h-12 rounded-xl ${theme.card} px-3 text-sm font-bold active:scale-[0.98]`}>
+                    Next Month
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <Kpi title="Income" value={money(totals.selectedMonth.income)} />
+                  <Kpi title="Expenses" value={money(totals.selectedMonth.expenses)} />
+                  <Kpi title="Profit" value={money(totals.selectedMonth.profit)} />
+                  <Kpi title="Jobs" value={String(totals.selectedMonth.jobs)} />
+                </div>
+              </div>
+            </Panel>
+            <ReportPeriod title={`Tax year · ${totals.taxStart} to ${totals.taxEnd}`} totals={totals.taxYear} money={money} />
+            <ReportPeriod title="All-time totals" totals={{ income: totals.income, expenses: totals.expenseTotal, profit: totals.profit }} money={money} />
+            <Kpi title="All-time jobs" value={String(totals.jobCount)} />
+
+            <Panel title="Current Stock Value">
+              <div className="space-y-4">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <NumberInput label="Motorcycles in stock" value={stockSettings.motorcycleStockCount} step="1" onChange={(value) => updateStockSetting("motorcycleStockCount", value)} />
+                  <MoneyInput label="Motorcycle stock cost value" value={stockSettings.motorcycleStockCostValue} onChange={(value) => updateStockSetting("motorcycleStockCostValue", value)} />
+                  <MoneyInput label="Expected motorcycle sale value" value={stockSettings.motorcycleExpectedSaleValue} onChange={(value) => updateStockSetting("motorcycleExpectedSaleValue", value)} />
+                  <NumberInput label="Keys in stock" value={stockSettings.keyStockCount} step="1" onChange={(value) => updateStockSetting("keyStockCount", value)} />
+                  <MoneyInput label="Average key cost" value={stockSettings.averageKeyCost} onChange={(value) => updateStockSetting("averageKeyCost", value)} />
+                  <MoneyInput label="Average key retail price" value={stockSettings.averageKeyRetailPrice} onChange={(value) => updateStockSetting("averageKeyRetailPrice", value)} />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <Kpi title="Motorcycles in stock" value={String(stockSettings.motorcycleStockCount)} />
+                  <Kpi title="Motorcycle cost value" value={money(stockSettings.motorcycleStockCostValue)} />
+                  <Kpi title="Expected motorcycle sale value" value={money(stockSettings.motorcycleExpectedSaleValue)} />
+                  <Kpi title="Expected motorcycle gross profit" value={money(stockValues.motorcycleExpectedGrossProfit)} />
+                  <Kpi title="Keys in stock" value={String(stockSettings.keyStockCount)} />
+                  <Kpi title="Key stock cost value" value={money(stockValues.keyStockCostValue)} />
+                  <Kpi title="Key stock retail value" value={money(stockValues.keyStockRetailValue)} />
+                  <Kpi title="Key stock expected gross profit" value={money(stockValues.keyStockExpectedGrossProfit)} />
+                  <Kpi title="Total stock cost value" value={money(stockValues.totalStockCostValue)} />
+                  <Kpi title="Total potential retail value" value={money(stockValues.totalPotentialRetailValue)} />
+                  <Kpi title="Total potential gross profit" value={money(stockValues.totalPotentialGrossProfit)} />
+                  <Kpi title="Estimated business position" value={money(stockValues.estimatedBusinessPosition)} />
+                </div>
+                <p className={`rounded-xl bg-[#252a34] p-3 text-xs ${theme.faint}`}>
+                  Expected sale values are estimates only. Actual profit is only confirmed once stock is sold.
+                </p>
+              </div>
+            </Panel>
+
+            <Panel title="Tax Estimate">
+              <div className="space-y-4">
+                <p className={`text-sm ${theme.muted}`}>
+                  UK sole trader estimate for {totals.taxStart} to {totals.taxEnd}. Drawings and ignored transfers are excluded.
+                </p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <MoneyInput
+                    label="Other taxable income this tax year"
+                    value={taxSettings.otherIncomeThisTaxYear}
+                    onChange={(value) => setTaxSettings((settings) => ({ ...settings, otherIncomeThisTaxYear: value }))}
+                  />
+                  <MoneyInput
+                    label="Tax savings already set aside"
+                    value={taxSettings.taxSavingsAlreadySetAside}
+                    onChange={(value) => setTaxSettings((settings) => ({ ...settings, taxSavingsAlreadySetAside: value }))}
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  <Kpi title="Tax year income" value={money(totals.taxYear.income)} />
+                  <Kpi title="Tax year expenses" value={money(totals.taxYear.expenses)} />
+                  <Kpi title="Tax year profit" value={money(taxEstimate.businessProfit)} />
+                  <Kpi title="Estimated income tax" value={money(taxEstimate.incomeTax)} />
+                  <Kpi title="Estimated Class 4 NI" value={money(taxEstimate.class4NI)} />
+                  <Kpi title="Estimated total tax" value={money(taxEstimate.estimatedTotalTax)} />
+                  <Kpi title="Recommended tax pot" value={money(taxEstimate.recommendedTaxPot)} />
+                  <Kpi title="Saved so far" value={money(taxSettings.taxSavingsAlreadySetAside)} />
+                  <Kpi title="Difference" value={money(taxEstimate.taxPotDifference)} valueClassName={taxEstimate.taxPotDifference < 0 ? "text-red-300" : theme.accentText} />
+                </div>
+                <p className={`rounded-xl bg-[#252a34] p-3 text-xs leading-relaxed ${theme.faint}`}>
+                  Estimate only. Final tax can change depending on other income, allowances, student loan, pensions, benefits, losses, capital allowances and HMRC rules.
+                </p>
+              </div>
+            </Panel>
 
             <div className="grid grid-cols-2 gap-3">
               <button onClick={() => exportCSV("jobs")} className={`rounded-2xl ${theme.accent} p-4 font-black`}>
@@ -467,11 +821,48 @@ export default function HomePage() {
                 <p>Estimated profit: <b>{money(totals.profit)}</b></p>
               </div>
             </Panel>
+
+            <Panel title="Shopify Import">
+              <p className={`text-sm leading-relaxed ${theme.muted}`}>
+                Coming next: upload Shopify orders CSV or connect Shopify API to create jobs automatically. Until then, positive Shopify bank payouts are imported as income; after order import is added, payouts should be ignored to avoid double counting.
+              </p>
+            </Panel>
+
+            <Panel title="Bank Connection">
+              <p className={`text-sm leading-relaxed ${theme.muted}`}>
+                Current method: bank CSV upload. Later this can be replaced with Open Banking.
+              </p>
+            </Panel>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Breakdown title={`${formatMonthLabel(selectedMonth)} income by category`} rows={breakdowns.income} money={money} />
+              <Breakdown title={`${formatMonthLabel(selectedMonth)} expenses by category`} rows={breakdowns.expenses} money={money} />
+            </div>
+
+            <Panel title="Recent bank imports">
+              {bankTransactions.length ? (
+                <div className="space-y-3">
+                  {bankTransactions.map((row) => (
+                    <div key={row.transaction_key} className="flex items-start justify-between gap-3 rounded-xl bg-[#252a34] p-3">
+                      <div className="min-w-0">
+                        <p className="truncate font-bold">{row.description}</p>
+                        <p className={`text-xs ${theme.faint}`}>{row.transaction_date} · {row.category}</p>
+                      </div>
+                      <p className={`shrink-0 font-black ${row.amount >= 0 ? theme.accentText : "text-red-300"}`}>{money(row.amount)}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : <p className={theme.faint}>No bank imports yet.</p>}
+            </Panel>
           </div>
         )}
 
         {view === "bank" && (
           <div className="space-y-4">
+            <div className={`rounded-2xl ${theme.card} p-4`}>
+              <p className="font-black">Needs Review: {needsReviewCount}</p>
+              <p className={`mt-1 text-sm ${theme.muted}`}>Review Miscellaneous and Other Income before importing.</p>
+            </div>
             <button onClick={importBankRows} className={`w-full rounded-2xl ${theme.accent} p-4 font-black`}>
               Import Selected Bank Rows
             </button>
@@ -493,7 +884,14 @@ export default function HomePage() {
                     <div className="grid grid-cols-2 gap-2">
                       <select
                         value={row.action}
-                        onChange={(e) => updateBankRow(index, { action: e.target.value as BankRow["action"] })}
+                        onChange={(e) => {
+                          const newAction = e.target.value as BankRow["action"];
+
+                          updateBankRow(index, {
+                            action: newAction,
+                            category: categoriesForAction(newAction)[0],
+                          });
+                        }}
                         className="rounded-xl border border-[#3a404d] bg-[#111317] p-3 text-sm"
                       >
                         <option value="income">Income</option>
@@ -502,28 +900,21 @@ export default function HomePage() {
                         <option value="ignore">Ignore</option>
                       </select>
 
-                      <select
-                        value={row.category}
-                        onChange={(e) => updateBankRow(index, { category: e.target.value })}
-                        className="rounded-xl border border-[#3a404d] bg-[#111317] p-3 text-sm"
-                      >
-                        {[
-                          "Keys / Stock",
-                          "Postage",
-                          "Fuel",
-                          "Tools",
-                          "Software",
-                          "Phone",
-                          "Insurance",
-                          "Shopify",
-                          "Drawings",
-                          "Bank Transfer",
-                          "Personal",
-                          "Other",
-                        ].map((c) => (
-                          <option key={c}>{c}</option>
-                        ))}
-                      </select>
+                      {row.action === "drawings" || row.action === "ignore" ? (
+                        <div className="rounded-xl border border-[#3a404d] bg-[#111317] p-3 text-sm text-[#b8bcc6]">
+                          {row.action === "drawings" ? "Drawings" : "Transfer / Ignore"}
+                        </div>
+                      ) : (
+                        <select
+                          value={row.category}
+                          onChange={(e) => updateBankRow(index, { category: e.target.value })}
+                          className="rounded-xl border border-[#3a404d] bg-[#111317] p-3 text-sm"
+                        >
+                          {categoriesForAction(row.action).map((c) => (
+                            <option key={c}>{c}</option>
+                          ))}
+                        </select>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -557,9 +948,32 @@ export default function HomePage() {
               <div className="space-y-3">
                 <Input label="Date" type="date" value={expense.expense_date} onChange={(v) => setExpense({ ...expense, expense_date: v })} />
                 <Input label="Supplier" value={expense.supplier} onChange={(v) => setExpense({ ...expense, supplier: v })} />
-                <Select label="Category" value={expense.category} onChange={(v) => setExpense({ ...expense, category: v })} options={["Keys / Stock", "Postage", "Fuel", "Tools", "Software", "Phone", "Insurance", "Other"]} />
+                <Select label="Category" value={expense.category} onChange={(v) => setExpense({ ...expense, category: v })} options={expenseCategories} />
                 <Input label="Amount £" type="number" value={expense.amount} onChange={(v) => setExpense({ ...expense, amount: v })} />
                 <Input label="Description" value={expense.description} onChange={(v) => setExpense({ ...expense, description: v })} />
+                <Input label="Used for job / bike (optional)" value={expense.linked_job_or_bike} onChange={(v) => setExpense({ ...expense, linked_job_or_bike: v })} />
+                <label className="block">
+                  <span className={`mb-1 block text-sm ${theme.muted}`}>Receipt photo</span>
+                  <span className="block min-h-14 cursor-pointer rounded-2xl border border-[#3a404d] bg-[#252a34] p-4 text-center font-bold">
+                    {receiptName || "Choose receipt photo"}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    className="hidden"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (!file) return;
+                      setReceiptName(file.name);
+                      const reader = new FileReader();
+                      reader.onload = () => setReceiptPreview(typeof reader.result === "string" ? reader.result : "");
+                      reader.readAsDataURL(file);
+                    }}
+                  />
+                </label>
+                {receiptPreview && <Image src={receiptPreview} alt="Receipt preview" width={640} height={480} unoptimized className="max-h-64 w-full rounded-2xl border border-[#3a404d] object-contain" />}
+                <p className={`text-xs ${theme.faint}`}>Preview only for now; the file is not uploaded or saved.</p>
                 <button onClick={addExpense} className={`w-full rounded-2xl ${theme.accent} p-4 font-black`}>Save Expense</button>
               </div>
             )}
@@ -580,16 +994,78 @@ export default function HomePage() {
   );
 }
 
-function Kpi({ title, value }: { title: string; value: string }) {
+function Kpi({ title, value, valueClassName = "" }: { title: string; value: string; valueClassName?: string }) {
   return (
     <div className={`rounded-2xl ${theme.card} p-4`}>
       <p className={`text-xs ${theme.muted}`}>{title}</p>
-      <p className="mt-1 text-xl font-black">{value}</p>
+      <p className={`mt-1 break-words text-lg font-black sm:text-xl ${valueClassName}`}>{value}</p>
     </div>
   );
 }
 
-function Quick({ label, onClick, dark = false }: any) {
+function MoneyInput({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {
+  return (
+    <label className="block">
+      <span className={`mb-1 block text-sm ${theme.muted}`}>{label}</span>
+      <div className="flex items-center rounded-2xl border border-[#3a404d] bg-[#252a34] focus-within:border-[#d7d7d7]">
+        <span className={`pl-4 ${theme.muted}`}>£</span>
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          inputMode="decimal"
+          value={value}
+          onChange={(event) => onChange(Math.max(0, Number(event.target.value) || 0))}
+          className="min-w-0 flex-1 bg-transparent p-4 text-lg text-white outline-none"
+        />
+      </div>
+    </label>
+  );
+}
+
+function NumberInput({ label, value, onChange, step = "0.01" }: { label: string; value: number; onChange: (value: number) => void; step?: string }) {
+  return (
+    <label className="block">
+      <span className={`mb-1 block text-sm ${theme.muted}`}>{label}</span>
+      <input
+        type="number"
+        min="0"
+        step={step}
+        inputMode="numeric"
+        value={value}
+        onChange={(event) => onChange(Math.max(0, Number(event.target.value) || 0))}
+        className="w-full rounded-2xl border border-[#3a404d] bg-[#252a34] p-4 text-lg text-white outline-none focus:border-[#d7d7d7]"
+      />
+    </label>
+  );
+}
+
+function ReportPeriod({ title, totals, money }: { title: string; totals: { income: number; expenses: number; profit: number }; money: (value: number) => string }) {
+  return (
+    <section>
+      <h2 className={`mb-2 text-sm font-bold ${theme.muted}`}>{title}</h2>
+      <div className="grid grid-cols-3 gap-2">
+        <Kpi title="Income" value={money(totals.income)} />
+        <Kpi title="Expenses" value={money(totals.expenses)} />
+        <Kpi title="Profit" value={money(totals.profit)} />
+      </div>
+    </section>
+  );
+}
+
+function Breakdown({ title, rows, money }: { title: string; rows: [string, number][]; money: (value: number) => string }) {
+  return (
+    <Panel title={title}>
+      {rows.length ? <div className="space-y-2">{rows.map(([label, value]) => (
+        <div key={label} className="flex justify-between gap-3 rounded-xl bg-[#252a34] p-3 text-sm">
+          <span className={theme.muted}>{label}</span><b>{money(value)}</b>
+        </div>
+      ))}</div> : <p className={theme.faint}>Nothing recorded yet.</p>}
+    </Panel>
+  );
+}
+
+function Quick({ label, onClick, dark = false }: { label: string; onClick: () => void; dark?: boolean }) {
   return (
     <button onClick={onClick} className={dark ? `rounded-2xl ${theme.card} p-4 text-left font-black active:scale-[0.98]` : `rounded-2xl ${theme.accent} p-4 text-left font-black active:scale-[0.98]`}>
       + {label}
@@ -597,7 +1073,7 @@ function Quick({ label, onClick, dark = false }: any) {
   );
 }
 
-function Panel({ title, children }: any) {
+function Panel({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className={`rounded-2xl ${theme.card} p-4`}>
       <h2 className="mb-3 text-lg font-black">{title}</h2>
@@ -606,12 +1082,12 @@ function Panel({ title, children }: any) {
   );
 }
 
-function JobList({ jobs, money, deleteJob }: any) {
+function JobList({ jobs, money, deleteJob }: { jobs: Job[]; money: (value: number) => string; deleteJob?: (id: string) => void }) {
   if (!jobs.length) return <p className={theme.faint}>No jobs found.</p>;
 
   return (
     <div className="space-y-3">
-      {jobs.map((j: any) => (
+      {jobs.map((j) => (
         <div key={j.id} className="rounded-xl bg-[#252a34] p-3">
           <div className="flex justify-between gap-3">
             <div>
@@ -630,12 +1106,12 @@ function JobList({ jobs, money, deleteJob }: any) {
   );
 }
 
-function ExpenseList({ expenses, money, deleteExpense }: any) {
+function ExpenseList({ expenses, money, deleteExpense }: { expenses: Expense[]; money: (value: number) => string; deleteExpense?: (id: string) => void }) {
   if (!expenses.length) return <p className={theme.faint}>No expenses found.</p>;
 
   return (
     <div className="space-y-3">
-      {expenses.map((e: any) => (
+      {expenses.map((e) => (
         <div key={e.id} className="rounded-xl bg-[#252a34] p-3">
           <div className="flex justify-between gap-3">
             <div>
@@ -654,7 +1130,7 @@ function ExpenseList({ expenses, money, deleteExpense }: any) {
   );
 }
 
-function NavButton({ active, onClick, label }: any) {
+function NavButton({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
   return (
     <button onClick={onClick} className={active ? `rounded-2xl ${theme.accent} px-2 py-3 text-[11px] font-black` : "rounded-2xl bg-[#252a34] px-2 py-3 text-[11px] font-bold text-[#b8bcc6]"}>
       {label}
