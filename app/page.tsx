@@ -195,6 +195,7 @@ export default function HomePage() {
 
   useEffect(() => {
     loadData();
+    loadStockValues();
   }, []);
 
   async function loadData() {
@@ -206,22 +207,48 @@ export default function HomePage() {
     setJobs((jobsResult.data || []) as Job[]);
     setExpenses((expensesResult.data || []) as Expense[]);
     setBankTransactions((bankResult.data || []) as BankTransaction[]);
-    const savedStock = window.localStorage.getItem("smartfobs-stock-settings");
-    if (savedStock) {
-      try {
-        setStockSettings({ ...defaultStockSettings, ...JSON.parse(savedStock) as Partial<StockSettings> });
-      } catch {
-        window.localStorage.removeItem("smartfobs-stock-settings");
-      }
-    }
   }
 
   function updateStockSetting(field: keyof StockSettings, value: number) {
-    setStockSettings((current) => {
-      const next = { ...current, [field]: Math.max(0, value) };
-      window.localStorage.setItem("smartfobs-stock-settings", JSON.stringify(next));
-      return next;
+    setStockSettings((current) => ({ ...current, [field]: Math.max(0, value) }));
+  }
+
+  async function loadStockValues() {
+    const { data, error } = await supabase
+      .from("smartfobs_settings")
+      .select("value")
+      .eq("key", "stock_values")
+      .maybeSingle();
+
+    if (error) {
+      console.error("Could not load stock values", error);
+      return;
+    }
+
+    if (!data?.value || typeof data.value !== "object" || Array.isArray(data.value)) {
+      setStockSettings(defaultStockSettings);
+      return;
+    }
+
+    const saved = data.value as Partial<Record<keyof StockSettings, unknown>>;
+    const values = { ...defaultStockSettings };
+    (Object.keys(values) as (keyof StockSettings)[]).forEach((key) => {
+      const value = Number(saved[key]);
+      values[key] = Number.isFinite(value) ? Math.max(0, value) : 0;
     });
+    setStockSettings(values);
+  }
+
+  async function saveStockValues(updatedValues: StockSettings) {
+    const { error } = await supabase.from("smartfobs_settings").upsert({
+      key: "stock_values",
+      value: updatedValues,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "key" });
+
+    if (error) return alert(`Could not save stock values: ${error.message}`);
+    setStockSettings(updatedValues);
+    alert("Stock values saved");
   }
 
   function openJob(type: string) {
@@ -687,7 +714,7 @@ export default function HomePage() {
             </h1>
             <p className={`text-sm ${theme.muted}`}>Fast records for jobs, expenses and tax.</p>
           </div>
-          <button type="button" onClick={() => void loadData()} className={`min-h-11 shrink-0 rounded-xl ${theme.card} px-4 text-sm font-bold active:scale-[0.98]`}>
+          <button type="button" onClick={() => void Promise.all([loadData(), loadStockValues()])} className={`min-h-11 shrink-0 rounded-xl ${theme.card} px-4 text-sm font-bold active:scale-[0.98]`}>
             Refresh
           </button>
         </header>
@@ -797,6 +824,9 @@ export default function HomePage() {
                   <Kpi title="Total potential gross profit" value={money(stockValues.totalPotentialGrossProfit)} />
                   <Kpi title="Estimated business position" value={money(stockValues.estimatedBusinessPosition)} />
                 </div>
+                <button type="button" onClick={() => void saveStockValues(stockSettings)} className={`min-h-14 w-full rounded-2xl ${theme.accent} p-4 font-black`}>
+                  Save Stock Values
+                </button>
                 <p className={`rounded-xl bg-[#252a34] p-3 text-xs ${theme.faint}`}>
                   Expected sale values are estimates only. Actual profit is only confirmed once stock is sold.
                 </p>
