@@ -21,7 +21,7 @@ type BankRow = {
   description: string;
   amount: number;
   balance: number;
-  action: "income" | "expense" | "ignore";
+  action: "income" | "expense" | "drawings" | "ignore";
   category: string;
 };
 
@@ -167,26 +167,28 @@ export default function HomePage() {
     return result.map((v) => v.trim().replace(/^"|"$/g, ""));
   }
 
-  function suggestAction(description: string, amount: number): "income" | "expense" | "ignore" {
-    const d = description.toLowerCase();
+  function suggestAction(description: string, amount: number): "income" | "expense" | "drawings" | "ignore" {
+  const d = description.toLowerCase();
 
-    if (d.includes("shopify")) return "ignore";
-    if (d.includes("natwest") || d.includes("transfer") || d.includes("dan byrne")) return "ignore";
-    if (amount > 0) return "income";
-    return "expense";
-  }
+  if (d.includes("dan byrne") || d.includes("drawings")) return "drawings";
+  if (d.includes("shopify")) return "ignore";
+  if (d.includes("natwest") || d.includes("transfer")) return "ignore";
+  if (amount > 0) return "income";
+  return "expense";
+}
 
   function suggestCategory(description: string) {
-    const d = description.toLowerCase();
+  const d = description.toLowerCase();
 
-    if (d.includes("post office") || d.includes("royal mail") || d.includes("postage")) return "Postage";
-    if (d.includes("shell") || d.includes("bp") || d.includes("esso") || d.includes("fuel")) return "Fuel";
-    if (d.includes("shopify")) return "Shopify";
-    if (d.includes("phone")) return "Phone";
-    if (d.includes("insurance")) return "Insurance";
-    if (d.includes("tool")) return "Tools";
-    return "Other";
-  }
+  if (d.includes("dan byrne") || d.includes("drawings")) return "Drawings";
+  if (d.includes("post office") || d.includes("royal mail") || d.includes("postage")) return "Postage";
+  if (d.includes("shell") || d.includes("bp") || d.includes("esso") || d.includes("fuel")) return "Fuel";
+  if (d.includes("shopify")) return "Shopify";
+  if (d.includes("phone")) return "Phone";
+  if (d.includes("insurance")) return "Insurance";
+  if (d.includes("tool")) return "Tools";
+  return "Other";
+}
 
   async function handleBankCSV(file: File) {
     const text = await file.text();
@@ -272,7 +274,7 @@ export default function HomePage() {
         imported++;
       }
 
-      if (row.action === "ignore") skipped++;
+      if (row.action === "drawings" || row.action === "ignore") skipped++;
     }
 
     alert(`Imported ${imported}. Skipped ${skipped}.`);
@@ -496,6 +498,7 @@ export default function HomePage() {
                       >
                         <option value="income">Income</option>
                         <option value="expense">Expense</option>
+                        <option value="drawings">Drawings</option>
                         <option value="ignore">Ignore</option>
                       </select>
 
@@ -504,7 +507,20 @@ export default function HomePage() {
                         onChange={(e) => updateBankRow(index, { category: e.target.value })}
                         className="rounded-xl border border-[#3a404d] bg-[#111317] p-3 text-sm"
                       >
-                        {["Keys / Stock", "Postage", "Fuel", "Tools", "Software", "Phone", "Insurance", "Shopify", "Other"].map((c) => (
+                        {[
+                          "Keys / Stock",
+                          "Postage",
+                          "Fuel",
+                          "Tools",
+                          "Software",
+                          "Phone",
+                          "Insurance",
+                          "Shopify",
+                          "Drawings",
+                          "Bank Transfer",
+                          "Personal",
+                          "Other",
+                        ].map((c) => (
                           <option key={c}>{c}</option>
                         ))}
                       </select>
