@@ -166,6 +166,8 @@ export default function HomePage() {
   const [stockSettings, setStockSettings] = useState<StockSettings>(defaultStockSettings);
   const [receiptName, setReceiptName] = useState("");
   const [receiptPreview, setReceiptPreview] = useState("");
+  const [editingJob, setEditingJob] = useState<Job | null>(null);
+  const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
 
   const [job, setJob] = useState({
     job_date: today,
@@ -305,6 +307,39 @@ export default function HomePage() {
     const { error } = await supabase.from("smartfobs_expenses").delete().eq("id", id);
     if (error) return alert(error.message);
     loadData();
+  }
+
+  async function saveEditedJob() {
+    if (!editingJob) return;
+    if (!editingJob.amount_charged) return alert("Amount required");
+    const { error } = await supabase.from("smartfobs_jobs").update({
+      customer_name: editingJob.customer_name,
+      vehicle: editingJob.vehicle,
+      registration: editingJob.registration,
+      job_type: editingJob.job_type,
+      amount_charged: Number(editingJob.amount_charged),
+      job_date: editingJob.job_date,
+      notes: editingJob.notes,
+    }).eq("id", editingJob.id);
+    if (error) return alert(error.message);
+    setEditingJob(null);
+    await loadData();
+  }
+
+  async function saveEditedExpense() {
+    if (!editingExpense) return;
+    if (!editingExpense.amount) return alert("Amount required");
+    const { error } = await supabase.from("smartfobs_expenses").update({
+      supplier: editingExpense.supplier,
+      category: editingExpense.category,
+      amount: Number(editingExpense.amount),
+      expense_date: editingExpense.expense_date,
+      description: editingExpense.description,
+      notes: editingExpense.notes,
+    }).eq("id", editingExpense.id);
+    if (error) return alert(error.message);
+    setEditingExpense(null);
+    await loadData();
   }
 
   function parseDate(dateText: string) {
@@ -626,6 +661,13 @@ export default function HomePage() {
 
   const needsReviewCount = bankRows.filter((row) => row.category === "Miscellaneous" || row.category === "Other Income").length;
 
+  function startEditingJob(jobToEdit: Job) {
+    const category = jobToEdit.job_type && incomeCategories.includes(jobToEdit.job_type)
+      ? jobToEdit.job_type
+      : incomeCategories[0];
+    setEditingJob({ ...jobToEdit, job_type: category });
+  }
+
   function money(value: number) {
     return value.toLocaleString("en-GB", { style: "currency", currency: "GBP" });
   }
@@ -633,16 +675,21 @@ export default function HomePage() {
   return (
     <main className={`min-h-screen ${theme.page} pb-28`}>
       <div className="mx-auto max-w-5xl p-4 space-y-5">
-        <header className="pt-2">
-          <p className={`text-xs font-bold tracking-[0.25em] ${theme.accentText}`}>SMARTFOBS</p>
-          <h1 className="text-3xl font-black">
-            {view === "home" && "Home"}
-            {view === "jobs" && "Jobs"}
-            {view === "expenses" && "Expenses"}
-            {view === "reports" && "Reports"}
-            {view === "bank" && "Bank Import"}
-          </h1>
-          <p className={`text-sm ${theme.muted}`}>Fast records for jobs, expenses and tax.</p>
+        <header className="flex items-start justify-between gap-3 pt-2">
+          <div>
+            <p className={`text-xs font-bold tracking-[0.25em] ${theme.accentText}`}>SMARTFOBS</p>
+            <h1 className="text-3xl font-black">
+              {view === "home" && "Home"}
+              {view === "jobs" && "Jobs"}
+              {view === "expenses" && "Expenses"}
+              {view === "reports" && "Reports"}
+              {view === "bank" && "Bank Import"}
+            </h1>
+            <p className={`text-sm ${theme.muted}`}>Fast records for jobs, expenses and tax.</p>
+          </div>
+          <button type="button" onClick={() => void loadData()} className={`min-h-11 shrink-0 rounded-xl ${theme.card} px-4 text-sm font-bold active:scale-[0.98]`}>
+            Refresh
+          </button>
         </header>
 
         <input
@@ -672,7 +719,7 @@ export default function HomePage() {
             </section>
 
             <Panel title="Recent Jobs">
-              <JobList jobs={filteredJobs.slice(0, 5)} money={money} deleteJob={deleteJob} />
+              <JobList jobs={filteredJobs.slice(0, 5)} money={money} deleteJob={deleteJob} editJob={startEditingJob} />
             </Panel>
           </>
         )}
@@ -683,7 +730,7 @@ export default function HomePage() {
               + Add Job
             </button>
             <Panel title="All Jobs">
-              <JobList jobs={filteredJobs} money={money} deleteJob={deleteJob} />
+              <JobList jobs={filteredJobs} money={money} deleteJob={deleteJob} editJob={startEditingJob} />
             </Panel>
           </>
         )}
@@ -694,7 +741,7 @@ export default function HomePage() {
               + Add Expense
             </button>
             <Panel title="All Expenses">
-              <ExpenseList expenses={filteredExpenses} money={money} deleteExpense={deleteExpense} />
+              <ExpenseList expenses={filteredExpenses} money={money} deleteExpense={deleteExpense} editExpense={setEditingExpense} />
             </Panel>
           </>
         )}
@@ -981,6 +1028,43 @@ export default function HomePage() {
         </div>
       )}
 
+      {editingJob && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/80 p-4">
+          <div className={`mx-auto max-w-lg space-y-4 rounded-3xl ${theme.card} p-4`}>
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-xl font-black">Edit Job</h2>
+              <button type="button" onClick={() => setEditingJob(null)} className="min-h-11 min-w-11 rounded-full bg-[#252a34] font-bold" aria-label="Close">×</button>
+            </div>
+            <Input label="Date" type="date" value={editingJob.job_date} onChange={(value) => setEditingJob({ ...editingJob, job_date: value })} />
+            <Input label="Customer" value={editingJob.customer_name ?? ""} onChange={(value) => setEditingJob({ ...editingJob, customer_name: value })} />
+            <Input label="Vehicle" value={editingJob.vehicle ?? ""} onChange={(value) => setEditingJob({ ...editingJob, vehicle: value })} />
+            <Input label="Registration" value={editingJob.registration ?? ""} onChange={(value) => setEditingJob({ ...editingJob, registration: value.toUpperCase() })} />
+            <Select label="Income category" value={editingJob.job_type ?? incomeCategories[0]} onChange={(value) => setEditingJob({ ...editingJob, job_type: value })} options={incomeCategories} />
+            <Input label="Amount £" type="number" value={String(editingJob.amount_charged ?? "")} onChange={(value) => setEditingJob({ ...editingJob, amount_charged: value })} />
+            <Input label="Notes" value={editingJob.notes ?? ""} onChange={(value) => setEditingJob({ ...editingJob, notes: value })} />
+            <button type="button" onClick={saveEditedJob} className={`min-h-14 w-full rounded-2xl ${theme.accent} p-4 font-black`}>Save Changes</button>
+          </div>
+        </div>
+      )}
+
+      {editingExpense && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/80 p-4">
+          <div className={`mx-auto max-w-lg space-y-4 rounded-3xl ${theme.card} p-4`}>
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-xl font-black">Edit Expense</h2>
+              <button type="button" onClick={() => setEditingExpense(null)} className="min-h-11 min-w-11 rounded-full bg-[#252a34] font-bold" aria-label="Close">×</button>
+            </div>
+            <Input label="Date" type="date" value={editingExpense.expense_date} onChange={(value) => setEditingExpense({ ...editingExpense, expense_date: value })} />
+            <Input label="Supplier" value={editingExpense.supplier ?? ""} onChange={(value) => setEditingExpense({ ...editingExpense, supplier: value })} />
+            <Select label="Expense category" value={editingExpense.category ?? expenseCategories[0]} onChange={(value) => setEditingExpense({ ...editingExpense, category: value })} options={expenseCategories} />
+            <Input label="Amount £" type="number" value={String(editingExpense.amount ?? "")} onChange={(value) => setEditingExpense({ ...editingExpense, amount: value })} />
+            <Input label="Description" value={editingExpense.description ?? ""} onChange={(value) => setEditingExpense({ ...editingExpense, description: value })} />
+            <Input label="Notes" value={editingExpense.notes ?? ""} onChange={(value) => setEditingExpense({ ...editingExpense, notes: value })} />
+            <button type="button" onClick={saveEditedExpense} className={`min-h-14 w-full rounded-2xl ${theme.accent} p-4 font-black`}>Save Changes</button>
+          </div>
+        </div>
+      )}
+
       <nav className="fixed bottom-0 left-0 right-0 z-30 border-t border-[#3a404d] bg-[#111317] p-3">
         <div className="mx-auto grid max-w-lg grid-cols-5 gap-2">
           <NavButton active={view === "home"} onClick={() => setView("home")} label="Home" />
@@ -1082,7 +1166,7 @@ function Panel({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
-function JobList({ jobs, money, deleteJob }: { jobs: Job[]; money: (value: number) => string; deleteJob?: (id: string) => void }) {
+function JobList({ jobs, money, deleteJob, editJob }: { jobs: Job[]; money: (value: number) => string; deleteJob?: (id: string) => void; editJob?: (job: Job) => void }) {
   if (!jobs.length) return <p className={theme.faint}>No jobs found.</p>;
 
   return (
@@ -1097,7 +1181,10 @@ function JobList({ jobs, money, deleteJob }: { jobs: Job[]; money: (value: numbe
             </div>
             <div className="text-right">
               <p className={`font-black ${theme.accentText}`}>{money(Number(j.amount_charged || 0))}</p>
-              {deleteJob && <button onClick={() => deleteJob(j.id)} className="mt-2 text-xs text-red-300">Delete</button>}
+              <div className="mt-2 flex justify-end gap-2">
+                {editJob && <button onClick={() => editJob(j)} className="min-h-9 rounded-lg border border-[#3a404d] px-3 text-xs font-bold">Edit</button>}
+                {deleteJob && <button onClick={() => deleteJob(j.id)} className="min-h-9 rounded-lg px-2 text-xs text-red-300">Delete</button>}
+              </div>
             </div>
           </div>
         </div>
@@ -1106,7 +1193,7 @@ function JobList({ jobs, money, deleteJob }: { jobs: Job[]; money: (value: numbe
   );
 }
 
-function ExpenseList({ expenses, money, deleteExpense }: { expenses: Expense[]; money: (value: number) => string; deleteExpense?: (id: string) => void }) {
+function ExpenseList({ expenses, money, deleteExpense, editExpense }: { expenses: Expense[]; money: (value: number) => string; deleteExpense?: (id: string) => void; editExpense?: (expense: Expense) => void }) {
   if (!expenses.length) return <p className={theme.faint}>No expenses found.</p>;
 
   return (
@@ -1121,7 +1208,10 @@ function ExpenseList({ expenses, money, deleteExpense }: { expenses: Expense[]; 
             </div>
             <div className="text-right">
               <p className="font-black text-red-300">-{money(Number(e.amount || 0))}</p>
-              {deleteExpense && <button onClick={() => deleteExpense(e.id)} className="mt-2 text-xs text-red-300">Delete</button>}
+              <div className="mt-2 flex justify-end gap-2">
+                {editExpense && <button onClick={() => editExpense(e)} className="min-h-9 rounded-lg border border-[#3a404d] px-3 text-xs font-bold">Edit</button>}
+                {deleteExpense && <button onClick={() => deleteExpense(e.id)} className="min-h-9 rounded-lg px-2 text-xs text-red-300">Delete</button>}
+              </div>
             </div>
           </div>
         </div>
