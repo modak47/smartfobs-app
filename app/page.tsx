@@ -11,6 +11,7 @@ import {
   getTaxYearEnd,
   getTaxYearQuarters,
   isInDateRange,
+  determineDirection,
   parseMoneyToPence,
   parseUKDate,
   penceToPounds,
@@ -165,6 +166,12 @@ type BankRejectedRow = {
 type BankImportPreview = {
   filename: string;
   detectedColumns: Record<string, string>;
+  amountModel: string;
+  positiveValues: string;
+  negativeValues: string;
+  totalMoneyIn: number;
+  totalMoneyOut: number;
+  netMovement: number;
   validRows: BankRow[];
   rejectedRows: BankRejectedRow[];
   duplicateCount: number;
@@ -557,11 +564,16 @@ export default function HomePage({
       reference: pickColumn(headers, ["Reference", "Bank Reference"]),
     };
 
-    const { data: existing } = await supabase
+    const hasSignedAmountColumn = Boolean(columns.amount);
+
+    const { data: existing, error: existingError } = await supabase
       .from("smartfobs_bank_transactions")
       .select("transaction_key, transaction_hash");
 
-    const existingKeys = new Set((existing || []).flatMap((row: { transaction_key?: string | null; transaction_hash?: string | null }) => [row.transaction_key, row.transaction_hash].filter(Boolean) as string[]));
+    const existingRows = existingError
+      ? (await supabase.from("smartfobs_bank_transactions").select("transaction_key")).data || []
+      : existing || [];
+    const existingKeys = new Set(existingRows.flatMap((row: { transaction_key?: string | null; transaction_hash?: string | null }) => [row.transaction_key, row.transaction_hash].filter(Boolean) as string[]));
     const seenInFile = new Set<string>();
     const validRows: BankRow[] = [];
     const rejectedRows: BankRejectedRow[] = [];
@@ -581,7 +593,8 @@ export default function HomePage({
       const balancePence = parseMoneyToPence(getRowValue(row, columns.balance));
       let amountPence: number | null = null;
 
-      if (paidInPence && paidInPence > 0) amountPence = paidInPence;
+      if (hasSignedAmountColumn) amountPence = amountPenceFromSingleColumn;
+      else if (paidInPence && paidInPence > 0) amountPence = paidInPence;
       else if (paidOutPence && paidOutPence > 0) amountPence = -paidOutPence;
       else amountPence = amountPenceFromSingleColumn;
 
@@ -630,10 +643,27 @@ export default function HomePage({
     const needsReview = (row: BankRow) => row.category === "Miscellaneous" || row.category === "Other Income";
     const sortedRows = validRows.sort((a, b) => Number(b.duplicate) - Number(a.duplicate) || Number(needsReview(b)) - Number(needsReview(a)));
     const dates = sortedRows.map((row) => row.transaction_date).sort();
+    const totalMoneyInPence = sortedRows.filter((row) => row.amountPence > 0).reduce((sum, row) => sum + row.amountPence, 0);
+    const totalMoneyOutPence = sortedRows.filter((row) => row.amountPence < 0).reduce((sum, row) => sum + Math.abs(row.amountPence), 0);
     setBankRows(sortedRows);
     setBankImportPreview({
       filename: file.name,
-      detectedColumns: Object.fromEntries(Object.entries(columns).map(([key, value]) => [key, value || "Not found"])),
+      detectedColumns: {
+        date: columns.date || "Not found",
+        type: columns.type || "Optional — not supplied",
+        description: columns.description || "Not found",
+        paidIn: hasSignedAmountColumn ? "Not required — signed Amount detected" : columns.paidIn || "Not found",
+        paidOut: hasSignedAmountColumn ? "Not required — signed Amount detected" : columns.paidOut || "Not found",
+        amount: columns.amount || "Not found",
+        balance: columns.balance || "Optional — not supplied",
+        reference: columns.reference || "Optional — not supplied",
+      },
+      amountModel: hasSignedAmountColumn ? "Signed amount column" : "Separate money in / money out columns",
+      positiveValues: hasSignedAmountColumn ? "Money in" : "Money in column",
+      negativeValues: hasSignedAmountColumn ? "Money out" : "Money out column",
+      totalMoneyIn: penceToPounds(totalMoneyInPence),
+      totalMoneyOut: penceToPounds(totalMoneyOutPence),
+      netMovement: penceToPounds(totalMoneyInPence - totalMoneyOutPence),
       validRows: sortedRows,
       rejectedRows,
       duplicateCount: sortedRows.filter((row) => row.duplicate).length,
@@ -1480,7 +1510,16 @@ export default function HomePage({
                     <Kpi title="Valid rows" value={String(bankImportPreview.validRows.length)} />
                     <Kpi title="Possible duplicates" value={String(bankImportPreview.duplicateCount)} />
                     <Kpi title="Rejected rows" value={String(bankImportPreview.rejectedRows.length)} />
+                    <Kpi title="Total money in" value={money(bankImportPreview.totalMoneyIn)} />
+                    <Kpi title="Total money out" value={money(bankImportPreview.totalMoneyOut)} />
+                    <Kpi title="Net movement" value={money(bankImportPreview.netMovement)} />
+                    <Kpi title="Amount model" value={bankImportPreview.amountModel} />
                     <Kpi title="Date range" value={bankImportPreview.dateFrom && bankImportPreview.dateTo ? `${formatUKDate(bankImportPreview.dateFrom)}–${formatUKDate(bankImportPreview.dateTo)}` : "Unknown"} />
+                  </div>
+                  <div className="rounded-xl bg-[#252a34] p-3 text-sm">
+                    <p><span className={theme.faint}>Amount model:</span> {bankImportPreview.amountModel}</p>
+                    <p><span className={theme.faint}>Positive values:</span> {bankImportPreview.positiveValues}</p>
+                    <p><span className={theme.faint}>Negative values:</span> {bankImportPreview.negativeValues}</p>
                   </div>
                   <div className="rounded-xl bg-[#252a34] p-3 text-xs">
                     <p className="mb-2 font-bold">Detected columns</p>
@@ -1500,6 +1539,23 @@ export default function HomePage({
                       ))}
                     </div>
                   )}
+                  <div className="space-y-2">
+                    <p className="text-sm font-bold">First 10 parsed rows</p>
+                    {bankImportPreview.validRows.slice(0, 10).map((row) => (
+                      <div key={row.transaction_hash} className="rounded-xl bg-[#252a34] p-3 text-sm">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="font-bold">{formatUKDate(row.transaction_date)} · {row.type || "Bank"}</p>
+                            <p className={`truncate text-xs ${theme.faint}`}>{row.description}</p>
+                            <p className={`text-xs ${theme.faint}`}>
+                              Direction: {determineDirection(row.amountPence) === "incoming" ? "Money in" : "Money out"} · Balance: {row.balancePence === null ? "Not supplied" : money(row.balance)}
+                            </p>
+                          </div>
+                          <p className={`shrink-0 font-black ${row.amount >= 0 ? theme.accentText : "text-red-300"}`}>{money(row.amount)}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                   <button onClick={importBankRows} className={`w-full rounded-2xl ${theme.accent} p-4 font-black`}>
                     Confirm Import
                   </button>
