@@ -131,6 +131,10 @@ type StockSettings = {
   averageKeyRetailPrice: number;
 };
 
+type HsbcCallbackStatus = "callback-received" | "error" | "invalid-callback";
+
+type SmartFobsView = "home" | "jobs" | "expenses" | "reports" | "bank";
+
 const defaultStockSettings: StockSettings = {
   motorcycleStockCount: 0,
   motorcycleStockCostValue: 0,
@@ -153,12 +157,18 @@ const defaultTaxSettings: TaxSettings = {
   taxSavingsAlreadySetAside: 0,
 };
 
-export default function HomePage() {
+export default function HomePage({
+  initialView = "home",
+  initialHsbcStatus = null,
+}: {
+  initialView?: SmartFobsView;
+  initialHsbcStatus?: HsbcCallbackStatus | null;
+}) {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [bankTransactions, setBankTransactions] = useState<BankTransaction[]>([]);
   const [bankRows, setBankRows] = useState<BankRow[]>([]);
-  const [view, setView] = useState<"home" | "jobs" | "expenses" | "reports" | "bank">("home");
+  const [view, setView] = useState<SmartFobsView>(initialView);
   const [showForm, setShowForm] = useState<"job" | "expense" | null>(null);
   const [search, setSearch] = useState("");
   const [selectedMonth, setSelectedMonth] = useState(getCurrentMonthKey);
@@ -168,6 +178,7 @@ export default function HomePage() {
   const [receiptPreview, setReceiptPreview] = useState("");
   const [editingJob, setEditingJob] = useState<Job | null>(null);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
+  const [hsbcStatus] = useState<HsbcCallbackStatus | null>(initialHsbcStatus);
 
   const [job, setJob] = useState({
     job_date: today,
@@ -936,6 +947,17 @@ export default function HomePage() {
 
         {view === "bank" && (
           <div className="space-y-4">
+            {hsbcStatus && (
+              <div className={`rounded-2xl ${theme.card} p-4`}>
+                <p className="font-black">HSBC Open Banking</p>
+                <p className={`mt-1 text-sm ${theme.muted}`}>
+                  {hsbcStatus === "callback-received" && "HSBC authorisation callback received. Secure token exchange is not enabled yet."}
+                  {hsbcStatus === "error" && "HSBC authorisation was cancelled or returned an error."}
+                  {hsbcStatus === "invalid-callback" && "The HSBC callback did not contain the required information."}
+                </p>
+              </div>
+            )}
+
             <div className={`rounded-2xl ${theme.card} p-4`}>
               <p className="font-black">Needs Review: {needsReviewCount}</p>
               <p className={`mt-1 text-sm ${theme.muted}`}>Review Miscellaneous and Other Income before importing.</p>
