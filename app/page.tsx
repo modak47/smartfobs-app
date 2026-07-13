@@ -3,6 +3,20 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import { supabase } from "@/lib/supabase";
+import {
+  createTransactionHash,
+  formatGBP,
+  formatUKDate,
+  getCurrentTaxYearStart,
+  getTaxYearEnd,
+  getTaxYearQuarters,
+  isInDateRange,
+  parseMoneyToPence,
+  parseUKDate,
+  penceToPounds,
+  type CategoryType,
+  type ReviewStatus,
+} from "@/lib/bookkeeping";
 
 function getLocalDateKey(date = new Date()) {
   const year = date.getFullYear();
@@ -83,6 +97,13 @@ function categoriesForAction(action: BankRow["action"]) {
   return ["Transfer / Ignore"];
 }
 
+function categoryTypeForAction(action: BankRow["action"]): CategoryType {
+  if (action === "income") return "income";
+  if (action === "expense") return "expense";
+  if (action === "drawings") return "owner";
+  return "transfer";
+}
+
 type Job = {
   id: string; job_date: string; customer_name: string | null; dealer_name: string | null;
   vehicle: string | null; registration: string | null; job_type: string | null;
@@ -96,7 +117,24 @@ type Expense = {
   notes: string | null;
 };
 
-type BankTransaction = BankRow & { id?: string; created_at?: string };
+type BankTransaction = BankRow & {
+  id?: string;
+  created_at?: string;
+  updated_at?: string;
+  transaction_type?: string | null;
+  money_in?: number | string | null;
+  money_out?: number | string | null;
+  bank_reference?: string | null;
+  source_filename?: string | null;
+  import_batch_id?: string | null;
+  transaction_hash?: string | null;
+  category_type?: CategoryType | string | null;
+  review_status?: ReviewStatus | string | null;
+  notes?: string | null;
+  matched_job_id?: string | null;
+  matched_income_id?: string | null;
+  matched_expense_id?: string | null;
+};
 
 type BankRow = {
   transaction_key: string;
@@ -104,9 +142,54 @@ type BankRow = {
   type: string;
   description: string;
   amount: number;
+  amountPence: number;
   balance: number;
+  balancePence: number | null;
   action: "income" | "expense" | "drawings" | "ignore";
   category: string;
+  category_type: CategoryType;
+  review_status: ReviewStatus;
+  notes: string;
+  bank_reference: string;
+  source_filename: string;
+  transaction_hash: string;
+  duplicate: boolean;
+};
+
+type BankRejectedRow = {
+  rowNumber: number;
+  raw: string;
+  reason: string;
+};
+
+type BankImportPreview = {
+  filename: string;
+  detectedColumns: Record<string, string>;
+  validRows: BankRow[];
+  rejectedRows: BankRejectedRow[];
+  duplicateCount: number;
+  dateFrom: string | null;
+  dateTo: string | null;
+};
+
+type ImportResult = {
+  importedRows: number;
+  duplicateRows: number;
+  rejectedRows: number;
+  batchId: string | null;
+  fallbackMode: boolean;
+};
+
+type BankFilters = {
+  search: string;
+  dateFrom: string;
+  dateTo: string;
+  direction: "all" | "in" | "out";
+  category: string;
+  reviewStatus: "all" | "needs_review" | "rule_applied" | "reviewed";
+  match: "all" | "matched" | "unmatched";
+  importBatch: string;
+  sort: "newest" | "oldest" | "highest" | "lowest";
 };
 
 type TaxSettings = {
@@ -168,6 +251,20 @@ export default function HomePage({
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [bankTransactions, setBankTransactions] = useState<BankTransaction[]>([]);
   const [bankRows, setBankRows] = useState<BankRow[]>([]);
+  const [bankImportPreview, setBankImportPreview] = useState<BankImportPreview | null>(null);
+  const [bankImportResult, setBankImportResult] = useState<ImportResult | null>(null);
+  const [selectedBankTransaction, setSelectedBankTransaction] = useState<BankTransaction | null>(null);
+  const [bankFilters, setBankFilters] = useState<BankFilters>({
+    search: "",
+    dateFrom: "",
+    dateTo: "",
+    direction: "all",
+    category: "all",
+    reviewStatus: "all",
+    match: "all",
+    importBatch: "all",
+    sort: "newest",
+  });
   const [view, setView] = useState<SmartFobsView>(initialView);
   const [showForm, setShowForm] = useState<"job" | "expense" | null>(null);
   const [search, setSearch] = useState("");
@@ -213,7 +310,7 @@ export default function HomePage({
     const [jobsResult, expensesResult, bankResult] = await Promise.all([
       supabase.from("smartfobs_jobs").select("*").order("job_date", { ascending: false }),
       supabase.from("smartfobs_expenses").select("*").order("expense_date", { ascending: false }),
-      supabase.from("smartfobs_bank_transactions").select("*").order("transaction_date", { ascending: false }).limit(10),
+      supabase.from("smartfobs_bank_transactions").select("*").order("transaction_date", { ascending: false }).limit(500),
     ]);
     setJobs((jobsResult.data || []) as Job[]);
     setExpenses((expensesResult.data || []) as Expense[]);
@@ -380,11 +477,6 @@ export default function HomePage({
     await loadData();
   }
 
-  function parseDate(dateText: string) {
-    const d = new Date(dateText);
-    return d.toISOString().slice(0, 10);
-  }
-
   function parseCSVLine(line: string) {
     const result: string[] = [];
     let current = "";
@@ -403,55 +495,152 @@ export default function HomePage({
     return result.map((v) => v.trim().replace(/^"|"$/g, ""));
   }
 
-  function suggestBankTreatment(description: string, amount: number): Pick<BankRow, "action" | "category"> {
+  function normaliseHeader(header: string) {
+    return header.toLowerCase().replace(/[^a-z0-9]/g, "");
+  }
+
+  function pickColumn(headers: string[], variants: string[]) {
+    const normalisedVariants = variants.map(normaliseHeader);
+    return headers.find((header) => normalisedVariants.includes(normaliseHeader(header)));
+  }
+
+  function getRowValue(row: Record<string, string>, column?: string) {
+    return column ? row[column]?.trim() || "" : "";
+  }
+
+  function suggestBankTreatment(description: string, amount: number): Pick<BankRow, "action" | "category" | "category_type" | "review_status"> {
     const d = description.toLowerCase();
     const contains = (...terms: string[]) => terms.some((term) => d.includes(term));
+    const result = (action: BankRow["action"], category: string, categoryType: CategoryType, reviewStatus: ReviewStatus = "rule_applied") => ({
+      action,
+      category,
+      category_type: categoryType,
+      review_status: reviewStatus,
+    });
 
     // When Shopify order import is added, change positive payouts to Ignore / Shopify Payout to avoid double counting.
-    if (d.includes("shopify") && amount > 0) return { action: "income", category: "Shopify Sale" };
-    if (d.includes("shopify") && amount < 0) return { action: "expense", category: "Shopify Fees" };
-    if (contains("dan byrne", "drawings")) return { action: "drawings", category: "Drawings" };
-    if (contains("sell your motorbike", "yesmoto", "software dev")) return { action: "income", category: "Contractor Work" };
-    if (contains("motorcycle", "moto", "dealer", "dg motorcycle")) return { action: "income", category: "Dealer Work" };
-    if (contains("bike sale", "vehicle sale", "sold bike")) return { action: "income", category: "Bike Sales" };
-    if (contains("autotrader", "auto trader")) return { action: "expense", category: "AutoTrader" };
-    if (contains("royal mail", "post office", "postage")) return { action: "expense", category: "Postage" };
-    if (contains("shell", "bp", "esso", "texaco", "fuel", "service station", "university way", "sf brighton", "brighton s/stn", "fbrighton")) return { action: "expense", category: "Fuel" };
-    if (contains("honda", "yamaha", "fowlers", "ebay", "parts")) return { action: "expense", category: "Parts" };
-    if (contains("screwfix", "toolstation", "machine mart")) return { action: "expense", category: "Tools & Equipment" };
-    if (contains("garden centre", "clothing", "workwear", "t shirt", "t-shirt")) return { action: "expense", category: "Clothing / PPE" };
-    if (contains("ee", "vodafone", "o2", "three")) return { action: "expense", category: "Phone" };
-    if (d.includes("insurance")) return { action: "expense", category: "Insurance" };
-    if (contains("natwest", "transfer", "savings")) return { action: "ignore", category: "Transfer / Ignore" };
-    if (amount > 0) return { action: "income", category: "Key Programming" };
-    return { action: "expense", category: "Miscellaneous" };
+    if (d.includes("shopify") && amount > 0) return result("income", "Shopify Sale", "income");
+    if (d.includes("shopify") && amount < 0) return result("expense", "Shopify Fees", "expense");
+    if (contains("dan byrne", "drawings")) return result("drawings", "Drawings", "owner");
+    if (contains("sell your motorbike", "yesmoto", "software dev")) return result("income", "Contractor Work", "income");
+    if (contains("motorcycle", "moto", "dealer", "dg motorcycle")) return result("income", "Dealer Work", "income");
+    if (contains("bike sale", "vehicle sale", "sold bike")) return result("income", "Bike Sales", "income");
+    if (contains("autotrader", "auto trader")) return result("expense", "AutoTrader", "expense");
+    if (contains("royal mail", "post office", "postage")) return result("expense", "Postage", "expense");
+    if (contains("shell", "bp", "esso", "texaco", "fuel", "service station", "university way", "sf brighton", "brighton s/stn", "fbrighton")) return result("expense", "Fuel", "expense");
+    if (contains("honda", "yamaha", "fowlers", "ebay", "parts")) return result("expense", "Parts", "expense");
+    if (contains("screwfix", "toolstation", "machine mart")) return result("expense", "Tools & Equipment", "expense");
+    if (contains("garden centre", "clothing", "workwear", "t shirt", "t-shirt")) return result("expense", "Clothing / PPE", "expense");
+    if (contains("ee", "vodafone", "o2", "three")) return result("expense", "Phone", "expense");
+    if (d.includes("insurance")) return result("expense", "Insurance", "expense");
+    if (contains("natwest", "transfer", "savings")) return result("ignore", "Transfer / Ignore", "transfer");
+    if (amount > 0) return result("income", "Other Income", "income", "needs_review");
+    return result("expense", "Miscellaneous", "expense", "needs_review");
   }
 
   async function handleBankCSV(file: File) {
+    if (!file.name.toLowerCase().endsWith(".csv")) return alert("Please upload a CSV file.");
+
     const text = await file.text();
-    const lines = text.split(/\r?\n/).filter(Boolean);
-    const dataLines = lines.slice(1);
+    const lines = text.split(/\r?\n/).filter((line) => line.trim());
+    if (lines.length < 2) return alert("The CSV did not contain any transaction rows.");
 
-    const parsed: BankRow[] = dataLines.map((line) => {
-      const [date, type, description, amountRaw, balanceRaw] = parseCSVLine(line);
-      const amount = Number(amountRaw);
-      const balance = Number(balanceRaw);
-      const transactionDate = parseDate(date);
-      const transactionKey = `${transactionDate}|${amount}|${description}`;
+    const headers = parseCSVLine(lines[0]);
+    const columns = {
+      date: pickColumn(headers, ["Date", "Transaction Date"]),
+      description: pickColumn(headers, ["Description", "Details"]),
+      type: pickColumn(headers, ["Type", "Transaction Type"]),
+      paidIn: pickColumn(headers, ["Paid In", "Money In", "Credit"]),
+      paidOut: pickColumn(headers, ["Paid Out", "Money Out", "Debit"]),
+      amount: pickColumn(headers, ["Amount", "Value"]),
+      balance: pickColumn(headers, ["Balance"]),
+      reference: pickColumn(headers, ["Reference", "Bank Reference"]),
+    };
 
-      return {
+    const { data: existing } = await supabase
+      .from("smartfobs_bank_transactions")
+      .select("transaction_key, transaction_hash");
+
+    const existingKeys = new Set((existing || []).flatMap((row: { transaction_key?: string | null; transaction_hash?: string | null }) => [row.transaction_key, row.transaction_hash].filter(Boolean) as string[]));
+    const seenInFile = new Set<string>();
+    const validRows: BankRow[] = [];
+    const rejectedRows: BankRejectedRow[] = [];
+
+    lines.slice(1).forEach((line, index) => {
+      const values = parseCSVLine(line);
+      const row = Object.fromEntries(headers.map((header, i) => [header, values[i] || ""]));
+      const rowNumber = index + 2;
+      const transactionDate = parseUKDate(getRowValue(row, columns.date));
+      const description = getRowValue(row, columns.description);
+      const transactionType = getRowValue(row, columns.type);
+      const bankReference = getRowValue(row, columns.reference);
+
+      const paidInPence = parseMoneyToPence(getRowValue(row, columns.paidIn));
+      const paidOutPence = parseMoneyToPence(getRowValue(row, columns.paidOut));
+      const amountPenceFromSingleColumn = parseMoneyToPence(getRowValue(row, columns.amount));
+      const balancePence = parseMoneyToPence(getRowValue(row, columns.balance));
+      let amountPence: number | null = null;
+
+      if (paidInPence && paidInPence > 0) amountPence = paidInPence;
+      else if (paidOutPence && paidOutPence > 0) amountPence = -paidOutPence;
+      else amountPence = amountPenceFromSingleColumn;
+
+      if (!transactionDate) {
+        rejectedRows.push({ rowNumber, raw: line, reason: "Missing or invalid date" });
+        return;
+      }
+      if (!description) {
+        rejectedRows.push({ rowNumber, raw: line, reason: "Missing description/details" });
+        return;
+      }
+      if (amountPence === null || !Number.isFinite(amountPence) || amountPence === 0) {
+        rejectedRows.push({ rowNumber, raw: line, reason: "Missing, zero or invalid amount" });
+        return;
+      }
+
+      const amount = penceToPounds(amountPence);
+      const transactionHash = createTransactionHash({
+        transactionDate,
+        description,
+        amountPence,
+        bankReference,
+      });
+      const transactionKey = transactionHash;
+      const duplicate = existingKeys.has(transactionHash) || seenInFile.has(transactionHash);
+      seenInFile.add(transactionHash);
+
+      validRows.push({
         transaction_key: transactionKey,
         transaction_date: transactionDate,
-        type,
+        type: transactionType,
         description,
+        amountPence,
         amount,
-        balance,
+        balancePence,
+        balance: balancePence === null ? 0 : penceToPounds(balancePence),
+        bank_reference: bankReference,
+        source_filename: file.name,
+        transaction_hash: transactionHash,
+        notes: "",
+        duplicate,
         ...suggestBankTreatment(description, amount),
-      };
+      });
     });
 
     const needsReview = (row: BankRow) => row.category === "Miscellaneous" || row.category === "Other Income";
-    setBankRows(parsed.sort((a, b) => Number(needsReview(b)) - Number(needsReview(a))));
+    const sortedRows = validRows.sort((a, b) => Number(b.duplicate) - Number(a.duplicate) || Number(needsReview(b)) - Number(needsReview(a)));
+    const dates = sortedRows.map((row) => row.transaction_date).sort();
+    setBankRows(sortedRows);
+    setBankImportPreview({
+      filename: file.name,
+      detectedColumns: Object.fromEntries(Object.entries(columns).map(([key, value]) => [key, value || "Not found"])),
+      validRows: sortedRows,
+      rejectedRows,
+      duplicateCount: sortedRows.filter((row) => row.duplicate).length,
+      dateFrom: dates[0] || null,
+      dateTo: dates.at(-1) || null,
+    });
+    setBankImportResult(null);
     setView("bank");
   }
 
@@ -463,78 +652,120 @@ export default function HomePage({
 
   async function importBankRows() {
     if (!bankRows.length) return alert("No bank rows to import");
+    if (!confirm("Import these bank transactions? Duplicates will be skipped and transactions will still need checking.")) return;
 
     const { data: existing } = await supabase
       .from("smartfobs_bank_transactions")
-      .select("transaction_key");
+      .select("transaction_key, transaction_hash");
 
-    const existingKeys = new Set((existing || []).map((r: { transaction_key: string }) => r.transaction_key));
-
-    let createdIncome = 0;
-    let createdExpenses = 0;
+    const existingKeys = new Set((existing || []).flatMap((row: { transaction_key?: string | null; transaction_hash?: string | null }) => [row.transaction_key, row.transaction_hash].filter(Boolean) as string[]));
+    const preview = bankImportPreview;
+    let batchId: string | null = null;
+    let fallbackMode = false;
+    let importedRows = 0;
     let skippedDuplicates = 0;
-    let ignoredOrDrawings = 0;
     let failed = 0;
 
+    if (preview) {
+      const { data: batch, error: batchError } = await supabase
+        .from("smartfobs_bank_import_batches")
+        .insert({
+          filename: preview.filename,
+          total_rows: preview.validRows.length + preview.rejectedRows.length,
+          imported_rows: 0,
+          duplicate_rows: preview.duplicateCount,
+          rejected_rows: preview.rejectedRows.length,
+          date_from: preview.dateFrom,
+          date_to: preview.dateTo,
+          status: "pending",
+        })
+        .select("id")
+        .single();
+
+      if (!batchError) batchId = batch?.id || null;
+      else fallbackMode = true;
+    }
+
     for (const row of bankRows) {
-      if (existingKeys.has(row.transaction_key)) {
+      if (existingKeys.has(row.transaction_key) || existingKeys.has(row.transaction_hash)) {
         skippedDuplicates++;
         continue;
       }
 
-      const { error: bankError } = await supabase.from("smartfobs_bank_transactions").insert(row);
+      const { error: bankError } = await supabase.from("smartfobs_bank_transactions").insert({
+        transaction_key: row.transaction_key,
+        transaction_date: row.transaction_date,
+        type: row.type,
+        transaction_type: row.type,
+        description: row.description,
+        amount: row.amount,
+        money_in: row.amountPence > 0 ? row.amount : null,
+        money_out: row.amountPence < 0 ? Math.abs(row.amount) : null,
+        balance: row.balance,
+        bank_reference: row.bank_reference,
+        source_filename: row.source_filename,
+        import_batch_id: batchId,
+        transaction_hash: row.transaction_hash,
+        action: row.action,
+        category: row.category,
+        category_type: row.category_type,
+        review_status: row.review_status,
+        notes: row.notes,
+      });
+
       if (bankError) {
-        failed++;
-        continue;
-      }
-      existingKeys.add(row.transaction_key);
-
-      if (row.action === "income") {
-        const { error } = await supabase.from("smartfobs_jobs").insert({
-          job_date: row.transaction_date,
-          customer_name: row.description,
-          dealer_name: "",
-          vehicle: "",
-          registration: "",
-          job_type: row.category,
-          amount_charged: Math.abs(row.amount),
-          payment_method: "Bank Transfer",
-          payment_status: "Paid",
-          notes: `Imported from bank CSV: ${row.type} · ${row.category}`,
-          source: "Bank Import",
-        });
-        if (error) failed++;
-        else createdIncome++;
-      }
-
-      if (row.action === "expense") {
-        const { error } = await supabase.from("smartfobs_expenses").insert({
-          expense_date: row.transaction_date,
-          supplier: row.description,
-          category: row.category,
+        fallbackMode = true;
+        const { error: fallbackError } = await supabase.from("smartfobs_bank_transactions").insert({
+          transaction_key: row.transaction_key,
+          transaction_date: row.transaction_date,
+          type: row.type,
           description: row.description,
-          amount: Math.abs(row.amount),
-          payment_method: "Bank Transfer",
-          notes: `Imported from bank CSV: ${row.type} · ${row.category}`,
+          amount: row.amount,
+          balance: row.balance,
+          action: row.action,
+          category: row.category,
         });
-        if (error) failed++;
-        else createdExpenses++;
+        if (fallbackError) {
+          failed++;
+          continue;
+        }
       }
 
-      if (row.action === "drawings" || row.action === "ignore") ignoredOrDrawings++;
+      importedRows++;
+      existingKeys.add(row.transaction_key);
+      existingKeys.add(row.transaction_hash);
     }
 
+    if (batchId) {
+      await supabase
+        .from("smartfobs_bank_import_batches")
+        .update({
+          imported_rows: importedRows,
+          duplicate_rows: skippedDuplicates,
+          rejected_rows: preview?.rejectedRows.length || 0,
+          status: failed ? "completed_with_errors" : "completed",
+        })
+        .eq("id", batchId);
+    }
+
+    setBankImportResult({
+      importedRows,
+      duplicateRows: skippedDuplicates,
+      rejectedRows: preview?.rejectedRows.length || 0,
+      batchId,
+      fallbackMode,
+    });
     alert([
-      `Created income rows: ${createdIncome}`,
-      `Created expense rows: ${createdExpenses}`,
+      `Imported bank transactions: ${importedRows}`,
       `Skipped duplicates: ${skippedDuplicates}`,
-      `Ignored / drawings rows: ${ignoredOrDrawings}`,
-      ...(failed ? [`Failed operations: ${failed}`] : []),
+      `Rejected CSV rows: ${preview?.rejectedRows.length || 0}`,
+      ...(failed ? [`Failed rows: ${failed}`] : []),
+      fallbackMode ? "Enhanced import fields need the Supabase migration before full batch/review metadata can be stored." : "Import batch recorded.",
     ].join("\n"));
     setBankRows([]);
+    setBankImportPreview(null);
     loadData();
   }
-
   function exportCSV(type: "jobs" | "expenses") {
     const rows =
       type === "jobs"
@@ -578,15 +809,63 @@ export default function HomePage({
     URL.revokeObjectURL(url);
   }
 
+  function downloadCSV(filename: string, rows: Record<string, string | number | null | undefined>[]) {
+    const csv = [
+      Object.keys(rows[0] || {}).join(","),
+      ...rows.map((row) =>
+        Object.values(row)
+          .map((value) => `"${String(value ?? "").replaceAll('"', '""')}"`)
+          .join(",")
+      ),
+    ].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function exportBankTransactionsCSV() {
+    downloadCSV("smartfobs-filtered-bank-transactions.csv", filteredBankTransactions.map((row) => ({
+      date: formatUKDate(row.transaction_date),
+      description: row.description,
+      amount: Number(row.amount || 0).toFixed(2),
+      category: row.category,
+      category_type: row.category_type,
+      review_status: row.review_status,
+      match_status: row.matched_job_id || row.matched_income_id || row.matched_expense_id ? "Matched" : "Unmatched",
+      reference: row.bank_reference,
+      source_filename: row.source_filename,
+      import_batch_id: row.import_batch_id,
+      notes: row.notes,
+    })));
+  }
+
+  function exportQuarterlySummaryCSV() {
+    downloadCSV("smartfobs-quarterly-summary.csv", quarterlySummary.map((row) => ({
+      quarter: row.label,
+      date_from: formatUKDate(row.from),
+      date_to: formatUKDate(row.to),
+      income: row.income.toFixed(2),
+      expenses: row.expenses.toFixed(2),
+      profit: row.profit.toFixed(2),
+      uncategorised_transactions: row.uncategorised,
+      unreviewed_transactions: row.unreviewed,
+      status: row.status,
+      submission_status: "Not submitted",
+    })));
+  }
+
   const totals = useMemo(() => {
     const now = new Date(`${today}T12:00:00`);
     const startOfWeek = new Date(now);
     const day = startOfWeek.getDay();
     startOfWeek.setDate(startOfWeek.getDate() - (day === 0 ? 6 : day - 1));
     const weekStart = startOfWeek.toISOString().slice(0, 10);
-    const thisYearsTaxStart = `${now.getFullYear()}-04-06`;
-    const taxStart = today >= thisYearsTaxStart ? thisYearsTaxStart : `${now.getFullYear() - 1}-04-06`;
-    const taxEnd = `${Number(taxStart.slice(0, 4)) + 1}-04-05`;
+    const taxStart = getCurrentTaxYearStart(today);
+    const taxEnd = getTaxYearEnd(taxStart);
     const sumJobs = (from: string, to = today) => jobs.filter((j) => j.job_date >= from && j.job_date <= to).reduce((sum, j) => sum + Number(j.amount_charged || 0), 0);
     const sumExpenses = (from: string, to = today) => expenses.filter((e) => e.expense_date >= from && e.expense_date <= to).reduce((sum, e) => sum + Number(e.amount || 0), 0);
     const period = (from: string, to = today) => {
@@ -697,7 +976,146 @@ export default function HomePage({
       .includes(search.toLowerCase())
   );
 
-  const needsReviewCount = bankRows.filter((row) => row.category === "Miscellaneous" || row.category === "Other Income").length;
+  const bankCategories = useMemo(
+    () => Array.from(new Set(bankTransactions.map((row) => row.category).filter(Boolean))).sort() as string[],
+    [bankTransactions],
+  );
+
+  const bankBatchIds = useMemo(
+    () => Array.from(new Set(bankTransactions.map((row) => row.import_batch_id).filter(Boolean))).sort() as string[],
+    [bankTransactions],
+  );
+
+  const filteredBankTransactions = useMemo(() => {
+    const rows = bankTransactions.filter((row) => {
+      const amount = Number(row.amount || 0);
+      const reviewStatus = (row.review_status || (row.category === "Miscellaneous" || row.category === "Other Income" ? "needs_review" : "reviewed")) as BankFilters["reviewStatus"];
+      const matched = Boolean(row.matched_job_id || row.matched_income_id || row.matched_expense_id);
+      const matchesSearch = `${row.description} ${row.bank_reference || ""}`.toLowerCase().includes(bankFilters.search.toLowerCase());
+      const matchesDateFrom = !bankFilters.dateFrom || row.transaction_date >= bankFilters.dateFrom;
+      const matchesDateTo = !bankFilters.dateTo || row.transaction_date <= bankFilters.dateTo;
+      const matchesDirection =
+        bankFilters.direction === "all" ||
+        (bankFilters.direction === "in" && amount > 0) ||
+        (bankFilters.direction === "out" && amount < 0);
+      const matchesCategory = bankFilters.category === "all" || row.category === bankFilters.category;
+      const matchesReview = bankFilters.reviewStatus === "all" || reviewStatus === bankFilters.reviewStatus;
+      const matchesMatched =
+        bankFilters.match === "all" ||
+        (bankFilters.match === "matched" && matched) ||
+        (bankFilters.match === "unmatched" && !matched);
+      const matchesBatch = bankFilters.importBatch === "all" || row.import_batch_id === bankFilters.importBatch;
+      return matchesSearch && matchesDateFrom && matchesDateTo && matchesDirection && matchesCategory && matchesReview && matchesMatched && matchesBatch;
+    });
+
+    return rows.sort((a, b) => {
+      if (bankFilters.sort === "oldest") return a.transaction_date.localeCompare(b.transaction_date);
+      if (bankFilters.sort === "highest") return Number(b.amount || 0) - Number(a.amount || 0);
+      if (bankFilters.sort === "lowest") return Number(a.amount || 0) - Number(b.amount || 0);
+      return b.transaction_date.localeCompare(a.transaction_date);
+    });
+  }, [bankFilters, bankTransactions]);
+
+  const bankSummary = useMemo(() => {
+    const moneyIn = filteredBankTransactions.filter((row) => Number(row.amount || 0) > 0).reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    const moneyOut = filteredBankTransactions.filter((row) => Number(row.amount || 0) < 0).reduce((sum, row) => sum + Math.abs(Number(row.amount || 0)), 0);
+    const needsReview = filteredBankTransactions.filter((row) => (row.review_status || row.category === "Miscellaneous" || row.category === "Other Income") === "needs_review").length;
+    const uncategorised = filteredBankTransactions.filter((row) => !row.category || row.category === "Miscellaneous" || row.category === "Other Income").length;
+    const matched = filteredBankTransactions.filter((row) => row.matched_job_id || row.matched_income_id || row.matched_expense_id).length;
+    return { moneyIn, moneyOut, netMovement: moneyIn - moneyOut, needsReview, uncategorised, matched };
+  }, [filteredBankTransactions]);
+
+  const qualityChecks = useMemo(() => ({
+    uncategorisedTransactions: bankTransactions.filter((row) => !row.category || row.category === "Miscellaneous" || row.category === "Other Income").length,
+    unreviewedTransactions: bankTransactions.filter((row) => (row.review_status || "needs_review") !== "reviewed").length,
+    unmatchedIncome: jobs.filter((job) => !job.notes?.includes("Matched bank transaction")).length,
+    unmatchedExpenses: expenses.filter((expense) => !expense.notes?.includes("Matched bank transaction")).length,
+    possibleDuplicates: bankTransactions.length - new Set(bankTransactions.map((row) => row.transaction_hash || row.transaction_key)).size,
+    parsingErrors: bankImportPreview?.rejectedRows.length || bankImportResult?.rejectedRows || 0,
+    missingDates: [...jobs.filter((job) => !job.job_date), ...expenses.filter((expense) => !expense.expense_date), ...bankTransactions.filter((row) => !row.transaction_date)].length,
+    invalidAmounts: [...jobs.filter((job) => !Number(job.amount_charged)), ...expenses.filter((expense) => !Number(expense.amount)), ...bankTransactions.filter((row) => !Number(row.amount))].length,
+  }), [bankImportPreview?.rejectedRows.length, bankImportResult?.rejectedRows, bankTransactions, expenses, jobs]);
+
+  const quarterlySummary = useMemo(() => (
+    getTaxYearQuarters(totals.taxStart).map((quarter) => {
+      const quarterJobs = jobs.filter((job) => isInDateRange(job.job_date, quarter.from, quarter.to));
+      const quarterExpenses = expenses.filter((expense) => isInDateRange(expense.expense_date, quarter.from, quarter.to));
+      const quarterBank = bankTransactions.filter((row) => isInDateRange(row.transaction_date, quarter.from, quarter.to));
+      const income = quarterJobs.reduce((sum, job) => sum + Number(job.amount_charged || 0), 0);
+      const expenseTotal = quarterExpenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
+      const uncategorised = quarterBank.filter((row) => !row.category || row.category === "Miscellaneous" || row.category === "Other Income").length;
+      const unreviewed = quarterBank.filter((row) => (row.review_status || "needs_review") !== "reviewed").length;
+      return {
+        ...quarter,
+        income,
+        expenses: expenseTotal,
+        profit: income - expenseTotal,
+        uncategorised,
+        unreviewed,
+        status: uncategorised === 0 && unreviewed === 0 ? "Review complete" : "Needs review",
+      };
+    })
+  ), [bankTransactions, expenses, jobs, totals.taxStart]);
+
+  const needsReviewCount = bankRows.filter((row) => row.category === "Miscellaneous" || row.category === "Other Income" || row.review_status === "needs_review").length;
+
+  async function saveBankTransactionChanges(updated: BankTransaction) {
+    if (!updated.id) return alert("This transaction cannot be updated until it has been imported.");
+
+    const enhancedUpdate = {
+      category: updated.category,
+      category_type: updated.category_type || categoryTypeForAction(updated.action),
+      review_status: updated.review_status || "needs_review",
+      notes: updated.notes || "",
+      matched_job_id: updated.matched_job_id || null,
+      matched_income_id: updated.matched_income_id || null,
+      matched_expense_id: updated.matched_expense_id || null,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { error } = await supabase
+      .from("smartfobs_bank_transactions")
+      .update(enhancedUpdate)
+      .eq("id", updated.id);
+
+    if (error) {
+      const { error: fallbackError } = await supabase
+        .from("smartfobs_bank_transactions")
+        .update({
+          category: updated.category,
+          action: updated.action,
+        })
+        .eq("id", updated.id);
+      if (fallbackError) return alert(fallbackError.message);
+    }
+
+    setSelectedBankTransaction(null);
+    await loadData();
+  }
+
+  function bestJobMatches(transaction: BankTransaction) {
+    const amount = Math.abs(Number(transaction.amount || 0));
+    return jobs
+      .map((job) => ({
+        job,
+        difference: Math.abs(Number(job.amount_charged || 0) - amount),
+        dateDistance: Math.abs(new Date(job.job_date).getTime() - new Date(transaction.transaction_date).getTime()),
+      }))
+      .sort((a, b) => a.difference - b.difference || a.dateDistance - b.dateDistance)
+      .slice(0, 5);
+  }
+
+  function bestExpenseMatches(transaction: BankTransaction) {
+    const amount = Math.abs(Number(transaction.amount || 0));
+    return expenses
+      .map((expense) => ({
+        expense,
+        difference: Math.abs(Number(expense.amount || 0) - amount),
+        dateDistance: Math.abs(new Date(expense.expense_date).getTime() - new Date(transaction.transaction_date).getTime()),
+      }))
+      .sort((a, b) => a.difference - b.difference || a.dateDistance - b.dateDistance)
+      .slice(0, 5);
+  }
 
   function startEditingJob(jobToEdit: Job) {
     const category = jobToEdit.job_type && incomeCategories.includes(jobToEdit.job_type)
@@ -707,7 +1125,7 @@ export default function HomePage({
   }
 
   function money(value: number) {
-    return value.toLocaleString("en-GB", { style: "currency", currency: "GBP" });
+    return formatGBP(value);
   }
 
   return (
@@ -747,6 +1165,17 @@ export default function HomePage({
               <p className={`mt-1 text-sm ${theme.faint}`}>Profit today: {money(totals.today.profit)}</p>
             </section>
 
+            <section className="grid grid-cols-2 gap-2">
+              <Kpi title="Income this month" value={money(totals.selectedMonth.income)} />
+              <Kpi title="Expenses this month" value={money(totals.selectedMonth.expenses)} />
+              <Kpi title="Profit this month" value={money(totals.selectedMonth.profit)} />
+              <Kpi title="Income this tax year" value={money(totals.taxYear.income)} />
+              <Kpi title="Expenses this tax year" value={money(totals.taxYear.expenses)} />
+              <Kpi title="Profit this tax year" value={money(totals.taxYear.profit)} />
+              <Kpi title="Transactions needing review" value={String(qualityChecks.unreviewedTransactions)} valueClassName={qualityChecks.unreviewedTransactions ? "text-red-300" : theme.accentText} />
+              <Kpi title="Unmatched bank transactions" value={String(bankTransactions.length - bankSummary.matched)} />
+            </section>
+
             <section className="grid grid-cols-2 gap-3">
               <Quick label="Smart Key" onClick={() => openJob("Smart Key")} />
               <Quick label="Lost Key" onClick={() => openJob("Lost Key")} />
@@ -758,6 +1187,19 @@ export default function HomePage({
 
             <Panel title="Recent Jobs">
               <JobList jobs={filteredJobs.slice(0, 5)} money={money} deleteJob={deleteJob} editJob={startEditingJob} />
+            </Panel>
+
+            <Panel title="Transactions needing attention">
+              {bankTransactions.filter((row) => (row.review_status || "needs_review") !== "reviewed").slice(0, 5).length ? (
+                <div className="space-y-3">
+                  {bankTransactions.filter((row) => (row.review_status || "needs_review") !== "reviewed").slice(0, 5).map((row) => (
+                    <button key={row.id || row.transaction_key} type="button" onClick={() => { setView("bank"); setSelectedBankTransaction(row); }} className="w-full rounded-xl bg-[#252a34] p-3 text-left">
+                      <span className="block font-bold">{row.description}</span>
+                      <span className={`block text-xs ${theme.faint}`}>{formatUKDate(row.transaction_date)} · {row.category || "Uncategorised"} · {money(Number(row.amount || 0))}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : <p className={theme.faint}>No imported bank transactions need review.</p>}
             </Panel>
           </>
         )}
@@ -885,6 +1327,9 @@ export default function HomePage({
               <button onClick={() => exportCSV("expenses")} className={`rounded-2xl ${theme.card} p-4 font-black`}>
                 Export Expenses CSV
               </button>
+              <button onClick={exportQuarterlySummaryCSV} className={`rounded-2xl ${theme.card} p-4 font-black`}>
+                Export Quarterly CSV
+              </button>
             </div>
 
             <Panel title="Bank CSV Import">
@@ -907,6 +1352,43 @@ export default function HomePage({
                 <p>Total business income recorded: <b>{money(totals.income)}</b></p>
                 <p>Total expenses recorded: <b>{money(totals.expenseTotal)}</b></p>
                 <p>Estimated profit: <b>{money(totals.profit)}</b></p>
+                <p>Bookkeeping estimate — review before using for a tax return.</p>
+              </div>
+            </Panel>
+
+            <Panel title="Quarterly bookkeeping summary">
+              <div className="space-y-3">
+                {quarterlySummary.map((quarter) => (
+                  <div key={quarter.label} className="rounded-xl bg-[#252a34] p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-black">{quarter.label} · {formatUKDate(quarter.from)} to {formatUKDate(quarter.to)}</p>
+                        <p className={`text-xs ${theme.faint}`}>Uncategorised: {quarter.uncategorised} · Unreviewed: {quarter.unreviewed} · Not submitted</p>
+                      </div>
+                      <span className={`rounded-full px-3 py-1 text-xs font-bold ${quarter.status === "Review complete" ? "bg-green-500/20 text-green-200" : "bg-red-500/20 text-red-200"}`}>
+                        {quarter.status}
+                      </span>
+                    </div>
+                    <div className="mt-3 grid grid-cols-3 gap-2">
+                      <Kpi title="Income" value={money(quarter.income)} />
+                      <Kpi title="Expenses" value={money(quarter.expenses)} />
+                      <Kpi title="Net profit" value={money(quarter.profit)} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Panel>
+
+            <Panel title="Bookkeeping Checks">
+              <div className="grid grid-cols-2 gap-2">
+                <Kpi title="Uncategorised transactions" value={String(qualityChecks.uncategorisedTransactions)} />
+                <Kpi title="Unreviewed transactions" value={String(qualityChecks.unreviewedTransactions)} />
+                <Kpi title="Unmatched income" value={String(qualityChecks.unmatchedIncome)} />
+                <Kpi title="Unmatched expenses" value={String(qualityChecks.unmatchedExpenses)} />
+                <Kpi title="Possible duplicates" value={String(qualityChecks.possibleDuplicates)} />
+                <Kpi title="Parsing errors" value={String(qualityChecks.parsingErrors)} />
+                <Kpi title="Missing dates" value={String(qualityChecks.missingDates)} />
+                <Kpi title="Invalid amounts" value={String(qualityChecks.invalidAmounts)} />
               </div>
             </Panel>
 
@@ -958,6 +1440,122 @@ export default function HomePage({
               </div>
             )}
 
+            <Panel title="HSBC Bank Feed">
+              <p className={`text-sm leading-relaxed ${theme.muted}`}>
+                Sandbox application registered. Live connection will be added after the bookkeeping workflow is complete.
+              </p>
+            </Panel>
+
+            <Panel title="Import HSBC CSV">
+              <div className="space-y-3">
+                <label className={`block rounded-2xl ${theme.accent} p-4 text-center font-black`}>
+                  Upload HSBC CSV
+                  <input
+                    type="file"
+                    accept=".csv,text/csv"
+                    className="hidden"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file) void handleBankCSV(file);
+                    }}
+                  />
+                </label>
+                <p className={`text-xs leading-relaxed ${theme.faint}`}>
+                  Imported bank transactions still need checking and categorisation. CSV import does not create jobs or expenses automatically.
+                </p>
+                {bankImportResult && (
+                  <div className="rounded-xl bg-[#252a34] p-3 text-sm">
+                    <p className="font-bold">Import result</p>
+                    <p className={theme.muted}>Imported: {bankImportResult.importedRows} · Duplicates: {bankImportResult.duplicateRows} · Rejected: {bankImportResult.rejectedRows}</p>
+                    {bankImportResult.fallbackMode && <p className="mt-1 text-xs text-red-200">Run the Supabase migration to enable batch IDs, hashes and review metadata.</p>}
+                  </div>
+                )}
+              </div>
+            </Panel>
+
+            {bankImportPreview && (
+              <Panel title={`CSV preview · ${bankImportPreview.filename}`}>
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-2">
+                    <Kpi title="Valid rows" value={String(bankImportPreview.validRows.length)} />
+                    <Kpi title="Possible duplicates" value={String(bankImportPreview.duplicateCount)} />
+                    <Kpi title="Rejected rows" value={String(bankImportPreview.rejectedRows.length)} />
+                    <Kpi title="Date range" value={bankImportPreview.dateFrom && bankImportPreview.dateTo ? `${formatUKDate(bankImportPreview.dateFrom)}–${formatUKDate(bankImportPreview.dateTo)}` : "Unknown"} />
+                  </div>
+                  <div className="rounded-xl bg-[#252a34] p-3 text-xs">
+                    <p className="mb-2 font-bold">Detected columns</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {Object.entries(bankImportPreview.detectedColumns).map(([key, value]) => (
+                        <p key={key}><span className={theme.faint}>{key}:</span> {value}</p>
+                      ))}
+                    </div>
+                  </div>
+                  {bankImportPreview.rejectedRows.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-sm font-bold text-red-200">Rejected rows</p>
+                      {bankImportPreview.rejectedRows.slice(0, 5).map((row) => (
+                        <p key={`${row.rowNumber}-${row.reason}`} className={`rounded-xl bg-red-500/10 p-3 text-xs ${theme.muted}`}>
+                          Row {row.rowNumber}: {row.reason}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                  <button onClick={importBankRows} className={`w-full rounded-2xl ${theme.accent} p-4 font-black`}>
+                    Confirm Import
+                  </button>
+                </div>
+              </Panel>
+            )}
+
+            <section className="grid grid-cols-2 gap-2">
+              <Kpi title="Money In" value={money(bankSummary.moneyIn)} />
+              <Kpi title="Money Out" value={money(bankSummary.moneyOut)} />
+              <Kpi title="Net Movement" value={money(bankSummary.netMovement)} />
+              <Kpi title="Needs Review" value={String(bankSummary.needsReview)} valueClassName={bankSummary.needsReview ? "text-red-300" : theme.accentText} />
+              <Kpi title="Uncategorised" value={String(bankSummary.uncategorised)} />
+              <Kpi title="Matched Transactions" value={String(bankSummary.matched)} />
+            </section>
+
+            <Panel title="Bank transaction filters">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Input label="Search description/reference" value={bankFilters.search} onChange={(value) => setBankFilters((filters) => ({ ...filters, search: value }))} />
+                <Input label="Date from" type="date" value={bankFilters.dateFrom} onChange={(value) => setBankFilters((filters) => ({ ...filters, dateFrom: value }))} />
+                <Input label="Date to" type="date" value={bankFilters.dateTo} onChange={(value) => setBankFilters((filters) => ({ ...filters, dateTo: value }))} />
+                <Select label="Money direction" value={bankFilters.direction} onChange={(value) => setBankFilters((filters) => ({ ...filters, direction: value as BankFilters["direction"] }))} options={["all", "in", "out"]} />
+                <Select label="Category" value={bankFilters.category} onChange={(value) => setBankFilters((filters) => ({ ...filters, category: value }))} options={["all", ...bankCategories]} />
+                <Select label="Review status" value={bankFilters.reviewStatus} onChange={(value) => setBankFilters((filters) => ({ ...filters, reviewStatus: value as BankFilters["reviewStatus"] }))} options={["all", "needs_review", "rule_applied", "reviewed"]} />
+                <Select label="Matched" value={bankFilters.match} onChange={(value) => setBankFilters((filters) => ({ ...filters, match: value as BankFilters["match"] }))} options={["all", "matched", "unmatched"]} />
+                <Select label="Import batch" value={bankFilters.importBatch} onChange={(value) => setBankFilters((filters) => ({ ...filters, importBatch: value }))} options={["all", ...bankBatchIds]} />
+                <Select label="Sort" value={bankFilters.sort} onChange={(value) => setBankFilters((filters) => ({ ...filters, sort: value as BankFilters["sort"] }))} options={["newest", "oldest", "highest", "lowest"]} />
+              </div>
+            </Panel>
+
+            <Panel title={`${filteredBankTransactions.length} imported bank transactions`}>
+              <button type="button" onClick={exportBankTransactionsCSV} className={`mb-3 w-full rounded-2xl ${theme.card} p-3 font-bold`}>
+                Export Filtered Bank CSV
+              </button>
+              {filteredBankTransactions.length ? (
+                <div className="space-y-3">
+                  {filteredBankTransactions.map((row) => {
+                    const amount = Number(row.amount || 0);
+                    const reviewStatus = row.review_status || (row.category === "Miscellaneous" || row.category === "Other Income" ? "needs_review" : "reviewed");
+                    const matched = Boolean(row.matched_job_id || row.matched_income_id || row.matched_expense_id);
+                    return (
+                      <button key={row.id || row.transaction_key} type="button" onClick={() => setSelectedBankTransaction(row)} className={`w-full rounded-xl bg-[#252a34] p-3 text-left ${reviewStatus !== "reviewed" ? "ring-1 ring-red-400/50" : ""}`}>
+                        <span className="flex justify-between gap-3">
+                          <span className="min-w-0">
+                            <span className="block truncate font-bold">{row.description}</span>
+                            <span className={`block text-xs ${theme.faint}`}>{formatUKDate(row.transaction_date)} · {row.category || "Uncategorised"} · {matched ? "Matched" : "Unmatched"}{row.notes ? " · Notes" : ""}</span>
+                          </span>
+                          <span className={`shrink-0 font-black ${amount >= 0 ? theme.accentText : "text-red-300"}`}>{money(amount)}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : <p className={theme.faint}>No imported bank transactions match these filters.</p>}
+            </Panel>
+
             <div className={`rounded-2xl ${theme.card} p-4`}>
               <p className="font-black">Needs Review: {needsReviewCount}</p>
               <p className={`mt-1 text-sm ${theme.muted}`}>Review Miscellaneous and Other Income before importing.</p>
@@ -989,6 +1587,8 @@ export default function HomePage({
                           updateBankRow(index, {
                             action: newAction,
                             category: categoriesForAction(newAction)[0],
+                            category_type: categoryTypeForAction(newAction),
+                            review_status: "needs_review",
                           });
                         }}
                         className="rounded-xl border border-[#3a404d] bg-[#111317] p-3 text-sm"
@@ -1006,7 +1606,7 @@ export default function HomePage({
                       ) : (
                         <select
                           value={row.category}
-                          onChange={(e) => updateBankRow(index, { category: e.target.value })}
+                          onChange={(e) => updateBankRow(index, { category: e.target.value, review_status: "needs_review" })}
                           className="rounded-xl border border-[#3a404d] bg-[#111317] p-3 text-sm"
                         >
                           {categoriesForAction(row.action).map((c) => (
@@ -1113,6 +1713,89 @@ export default function HomePage({
             <Input label="Description" value={editingExpense.description ?? ""} onChange={(value) => setEditingExpense({ ...editingExpense, description: value })} />
             <Input label="Notes" value={editingExpense.notes ?? ""} onChange={(value) => setEditingExpense({ ...editingExpense, notes: value })} />
             <button type="button" onClick={saveEditedExpense} className={`min-h-14 w-full rounded-2xl ${theme.accent} p-4 font-black`}>Save Changes</button>
+          </div>
+        </div>
+      )}
+
+      {selectedBankTransaction && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/80 p-4">
+          <div className={`mx-auto max-w-lg space-y-4 rounded-3xl ${theme.card} p-4`}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-black">Review Bank Transaction</h2>
+                <p className={`text-sm ${theme.faint}`}>{formatUKDate(selectedBankTransaction.transaction_date)} · {money(Number(selectedBankTransaction.amount || 0))}</p>
+              </div>
+              <button type="button" onClick={() => setSelectedBankTransaction(null)} className="min-h-11 min-w-11 rounded-full bg-[#252a34] font-bold" aria-label="Close">×</button>
+            </div>
+
+            <div className="rounded-xl bg-[#252a34] p-3">
+              <p className="font-bold">{selectedBankTransaction.description}</p>
+              {selectedBankTransaction.bank_reference && <p className={`text-xs ${theme.faint}`}>Reference: {selectedBankTransaction.bank_reference}</p>}
+              <p className={`text-xs ${theme.faint}`}>Match status: {selectedBankTransaction.matched_job_id || selectedBankTransaction.matched_income_id || selectedBankTransaction.matched_expense_id ? "Matched" : "Unmatched"}</p>
+            </div>
+
+            <Select
+              label="Category type"
+              value={String(selectedBankTransaction.category_type || categoryTypeForAction(selectedBankTransaction.action))}
+              onChange={(value) => {
+                const categoryType = value as CategoryType;
+                setSelectedBankTransaction({
+                  ...selectedBankTransaction,
+                  category_type: categoryType,
+                  action: categoryType === "income" ? "income" : categoryType === "expense" ? "expense" : categoryType === "owner" ? "drawings" : "ignore",
+                });
+              }}
+              options={["income", "expense", "transfer", "owner", "tax", "ignored"]}
+            />
+            <Input label="Category" value={selectedBankTransaction.category || ""} onChange={(value) => setSelectedBankTransaction({ ...selectedBankTransaction, category: value })} />
+            <Select
+              label="Review status"
+              value={String(selectedBankTransaction.review_status || "needs_review")}
+              onChange={(value) => setSelectedBankTransaction({ ...selectedBankTransaction, review_status: value as ReviewStatus })}
+              options={["needs_review", "rule_applied", "reviewed"]}
+            />
+            <Input label="Notes" value={selectedBankTransaction.notes || ""} onChange={(value) => setSelectedBankTransaction({ ...selectedBankTransaction, notes: value })} />
+
+            <div className="grid grid-cols-2 gap-2">
+              <button type="button" onClick={() => setSelectedBankTransaction({ ...selectedBankTransaction, category: "Personal transaction", category_type: "ignored", action: "ignore", review_status: "reviewed" })} className={`rounded-xl ${theme.card} p-3 text-sm font-bold`}>
+                Personal / non-business
+              </button>
+              <button type="button" onClick={() => setSelectedBankTransaction({ ...selectedBankTransaction, category: "Transfer between accounts", category_type: "transfer", action: "ignore", review_status: "reviewed" })} className={`rounded-xl ${theme.card} p-3 text-sm font-bold`}>
+                Internal transfer
+              </button>
+              <button type="button" onClick={() => setSelectedBankTransaction({ ...selectedBankTransaction, category: "Owner withdrawal", category_type: "owner", action: "drawings", review_status: "reviewed" })} className={`rounded-xl ${theme.card} p-3 text-sm font-bold`}>
+                Owner withdrawal
+              </button>
+              <button type="button" onClick={() => setSelectedBankTransaction({ ...selectedBankTransaction, matched_job_id: null, matched_income_id: null, matched_expense_id: null })} className={`rounded-xl ${theme.card} p-3 text-sm font-bold`}>
+                Remove match
+              </button>
+            </div>
+
+            {Number(selectedBankTransaction.amount || 0) >= 0 ? (
+              <div className="space-y-2">
+                <p className="text-sm font-bold">Suggested job matches</p>
+                {bestJobMatches(selectedBankTransaction).map(({ job: match, difference }) => (
+                  <button key={match.id} type="button" onClick={() => setSelectedBankTransaction({ ...selectedBankTransaction, matched_job_id: match.id, matched_income_id: null, matched_expense_id: null })} className="w-full rounded-xl bg-[#252a34] p-3 text-left text-sm">
+                    <span className="block font-bold">{match.customer_name || match.dealer_name || "Unnamed job"}</span>
+                    <span className={theme.faint}>{formatUKDate(match.job_date)} · {money(Number(match.amount_charged || 0))} · Difference {money(difference)}</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <p className="text-sm font-bold">Suggested expense matches</p>
+                {bestExpenseMatches(selectedBankTransaction).map(({ expense: match, difference }) => (
+                  <button key={match.id} type="button" onClick={() => setSelectedBankTransaction({ ...selectedBankTransaction, matched_expense_id: match.id, matched_job_id: null, matched_income_id: null })} className="w-full rounded-xl bg-[#252a34] p-3 text-left text-sm">
+                    <span className="block font-bold">{match.supplier || "Expense"}</span>
+                    <span className={theme.faint}>{formatUKDate(match.expense_date)} · {money(Number(match.amount || 0))} · Difference {money(difference)}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <button type="button" onClick={() => void saveBankTransactionChanges(selectedBankTransaction)} className={`min-h-14 w-full rounded-2xl ${theme.accent} p-4 font-black`}>
+              Save Bank Review
+            </button>
           </div>
         </div>
       )}
