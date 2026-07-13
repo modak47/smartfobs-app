@@ -5,7 +5,8 @@ import Image from "next/image";
 import { supabase } from "@/lib/supabase";
 import {
   affectsProfit,
-  createTransactionHash,
+  createCanonicalOccurrenceHash,
+  createCanonicalTransactionBase,
   determineDirection,
   formatGBP,
   formatUKDate,
@@ -16,6 +17,7 @@ import {
   parseMoneyToPence,
   parseUKDate,
   penceToPounds,
+  normaliseCanonicalDescription,
   type CategoryType,
   type ReviewStatus,
 } from "@/lib/bookkeeping";
@@ -130,6 +132,8 @@ type BankTransaction = BankRow & {
   source_filename?: string | null;
   import_batch_id?: string | null;
   transaction_hash?: string | null;
+  canonical_base_hash?: string | null;
+  occurrence_index?: number | string | null;
   category_type?: CategoryType | string | null;
   review_status?: ReviewStatus | string | null;
   notes?: string | null;
@@ -155,6 +159,10 @@ type BankRow = {
   bank_reference: string;
   source_filename: string;
   transaction_hash: string;
+  canonical_base_hash: string;
+  occurrence_index: number;
+  existing_occurrence_count: number;
+  already_imported: boolean;
   duplicate: boolean;
 };
 
@@ -173,11 +181,27 @@ type BankImportPreview = {
   totalMoneyIn: number;
   totalMoneyOut: number;
   netMovement: number;
+  totalRows: number;
   validRows: BankRow[];
   rejectedRows: BankRejectedRow[];
   duplicateCount: number;
+  alreadyImportedRows: number;
+  genuinelyNewRows: number;
+  repeatedIdenticalOccurrences: number;
   dateFrom: string | null;
   dateTo: string | null;
+};
+
+type ExistingBankDuplicateRow = {
+  id?: string | null;
+  transaction_key?: string | null;
+  transaction_hash?: string | null;
+  canonical_base_hash?: string | null;
+  occurrence_index?: number | string | null;
+  transaction_date?: string | null;
+  description?: string | null;
+  amount?: number | string | null;
+  balance?: number | string | null;
 };
 
 type ImportResult = {
@@ -613,6 +637,81 @@ export default function HomePage({
     return column ? row[column]?.trim() || "" : "";
   }
 
+  function canonicalBaseForExistingBankRow(row: {
+    transaction_date?: string | null;
+    description?: string | null;
+    amount?: number | string | null;
+    canonical_base_hash?: string | null;
+  }) {
+    if (row.canonical_base_hash) return row.canonical_base_hash;
+    const transactionDate = parseUKDate(String(row.transaction_date || "")) || String(row.transaction_date || "").slice(0, 10);
+    const amountPence = parseMoneyToPence(row.amount);
+    if (!transactionDate || amountPence === null) return null;
+    return createCanonicalTransactionBase({
+      transactionDate,
+      description: row.description || "",
+      amountPence,
+    });
+  }
+
+  function legacyBalanceDuplicateKey(row: {
+    description?: string | null;
+    amount?: number | string | null;
+    balance?: number | string | null;
+  }) {
+    const amountPence = parseMoneyToPence(row.amount);
+    const balancePence = parseMoneyToPence(row.balance);
+    if (amountPence === null || balancePence === null) return null;
+    return [
+      normaliseCanonicalDescription(row.description || ""),
+      String(amountPence),
+      String(balancePence),
+    ].join("|");
+  }
+
+  async function loadExistingBankRowsForDuplicateCheck(): Promise<ExistingBankDuplicateRow[]> {
+    const fields = [
+      "id",
+      "transaction_key",
+      "transaction_hash",
+      "canonical_base_hash",
+      "occurrence_index",
+      "transaction_date",
+      "description",
+      "amount",
+      "balance",
+    ].join(",");
+    const enhanced = await supabase.from("smartfobs_bank_transactions").select(fields);
+    if (!enhanced.error) return (enhanced.data || []) as ExistingBankDuplicateRow[];
+
+    const fallback = await supabase
+      .from("smartfobs_bank_transactions")
+      .select("id,transaction_key,transaction_hash,transaction_date,description,amount,balance");
+    return (fallback.data || []) as ExistingBankDuplicateRow[];
+  }
+
+  function collectExistingLegacyBalanceKeys(rows: {
+    description?: string | null;
+    amount?: number | string | null;
+    balance?: number | string | null;
+  }[]) {
+    return new Set(rows.map(legacyBalanceDuplicateKey).filter(Boolean) as string[]);
+  }
+
+  function countExistingOccurrences(rows: {
+    transaction_date?: string | null;
+    description?: string | null;
+    amount?: number | string | null;
+    canonical_base_hash?: string | null;
+  }[]) {
+    return rows.reduce<Record<string, number>>((counts, row) => {
+      const base = canonicalBaseForExistingBankRow(row);
+      if (!base) return counts;
+      counts[base] = (counts[base] || 0) + 1;
+      return counts;
+    }, {});
+  }
+
   function suggestBankTreatment(description: string, amount: number): Pick<BankRow, "action" | "category" | "category_type" | "review_status"> {
     const d = description.toLowerCase();
     const contains = (...terms: string[]) => terms.some((term) => d.includes(term));
@@ -664,15 +763,10 @@ export default function HomePage({
 
     const hasSignedAmountColumn = Boolean(columns.amount);
 
-    const { data: existing, error: existingError } = await supabase
-      .from("smartfobs_bank_transactions")
-      .select("transaction_key, transaction_hash");
-
-    const existingRows = existingError
-      ? (await supabase.from("smartfobs_bank_transactions").select("transaction_key")).data || []
-      : existing || [];
-    const existingKeys = new Set(existingRows.flatMap((row: { transaction_key?: string | null; transaction_hash?: string | null }) => [row.transaction_key, row.transaction_hash].filter(Boolean) as string[]));
-    const seenInFile = new Set<string>();
+    const existingRows = await loadExistingBankRowsForDuplicateCheck();
+    const existingOccurrenceCounts = countExistingOccurrences(existingRows);
+    const existingLegacyBalanceKeys = collectExistingLegacyBalanceKeys(existingRows);
+    const incomingOccurrenceCounts: Record<string, number> = {};
     const validRows: BankRow[] = [];
     const rejectedRows: BankRejectedRow[] = [];
 
@@ -710,15 +804,18 @@ export default function HomePage({
       }
 
       const amount = penceToPounds(amountPence);
-      const transactionHash = createTransactionHash({
+      const canonicalBaseHash = createCanonicalTransactionBase({
         transactionDate,
         description,
         amountPence,
-        bankReference,
       });
+      const occurrenceIndex = (incomingOccurrenceCounts[canonicalBaseHash] || 0) + 1;
+      incomingOccurrenceCounts[canonicalBaseHash] = occurrenceIndex;
+      const transactionHash = createCanonicalOccurrenceHash(canonicalBaseHash, occurrenceIndex);
       const transactionKey = transactionHash;
-      const duplicate = existingKeys.has(transactionHash) || seenInFile.has(transactionHash);
-      seenInFile.add(transactionHash);
+      const existingOccurrenceCount = existingOccurrenceCounts[canonicalBaseHash] || 0;
+      const legacyDuplicateKey = legacyBalanceDuplicateKey({ description, amount, balance: balancePence === null ? null : penceToPounds(balancePence) });
+      const alreadyImported = occurrenceIndex <= existingOccurrenceCount || (legacyDuplicateKey ? existingLegacyBalanceKeys.has(legacyDuplicateKey) : false);
       const rule = categorisationRules.find((candidate) => ruleMatches(candidate, description, amount));
       const suggestedTreatment = rule
         ? {
@@ -741,8 +838,12 @@ export default function HomePage({
         bank_reference: bankReference,
         source_filename: file.name,
         transaction_hash: transactionHash,
+        canonical_base_hash: canonicalBaseHash,
+        occurrence_index: occurrenceIndex,
+        existing_occurrence_count: existingOccurrenceCount,
+        already_imported: alreadyImported,
         notes: "",
-        duplicate,
+        duplicate: alreadyImported,
         ...suggestedTreatment,
       });
     });
@@ -752,6 +853,7 @@ export default function HomePage({
     const dates = sortedRows.map((row) => row.transaction_date).sort();
     const totalMoneyInPence = sortedRows.filter((row) => row.amountPence > 0).reduce((sum, row) => sum + row.amountPence, 0);
     const totalMoneyOutPence = sortedRows.filter((row) => row.amountPence < 0).reduce((sum, row) => sum + Math.abs(row.amountPence), 0);
+    const repeatedIdenticalOccurrences = Object.values(incomingOccurrenceCounts).filter((count) => count > 1).reduce((sum, count) => sum + count - 1, 0);
     setBankRows(sortedRows);
     setBankImportPreview({
       filename: file.name,
@@ -771,9 +873,13 @@ export default function HomePage({
       totalMoneyIn: penceToPounds(totalMoneyInPence),
       totalMoneyOut: penceToPounds(totalMoneyOutPence),
       netMovement: penceToPounds(totalMoneyInPence - totalMoneyOutPence),
+      totalRows: lines.length - 1,
       validRows: sortedRows,
       rejectedRows,
       duplicateCount: sortedRows.filter((row) => row.duplicate).length,
+      alreadyImportedRows: sortedRows.filter((row) => row.already_imported).length,
+      genuinelyNewRows: sortedRows.filter((row) => !row.already_imported).length,
+      repeatedIdenticalOccurrences,
       dateFrom: dates[0] || null,
       dateTo: dates.at(-1) || null,
     });
@@ -791,11 +897,9 @@ export default function HomePage({
     if (!bankRows.length) return alert("No bank rows to import");
     if (!confirm("Import these bank transactions? Duplicates will be skipped and transactions will still need checking.")) return;
 
-    const { data: existing } = await supabase
-      .from("smartfobs_bank_transactions")
-      .select("transaction_key, transaction_hash");
-
-    const existingKeys = new Set((existing || []).flatMap((row: { transaction_key?: string | null; transaction_hash?: string | null }) => [row.transaction_key, row.transaction_hash].filter(Boolean) as string[]));
+    const existingRows = await loadExistingBankRowsForDuplicateCheck();
+    const existingOccurrenceCounts = countExistingOccurrences(existingRows);
+    const existingLegacyBalanceKeys = collectExistingLegacyBalanceKeys(existingRows);
     const preview = bankImportPreview;
     let batchId: string | null = null;
     let fallbackMode = false;
@@ -823,8 +927,14 @@ export default function HomePage({
       else fallbackMode = true;
     }
 
-    for (const row of bankRows) {
-      if (existingKeys.has(row.transaction_key) || existingKeys.has(row.transaction_hash)) {
+    const rowsToImport = [...bankRows].sort((a, b) =>
+      a.canonical_base_hash.localeCompare(b.canonical_base_hash) || a.occurrence_index - b.occurrence_index
+    );
+
+    for (const row of rowsToImport) {
+      const existingOccurrenceCount = existingOccurrenceCounts[row.canonical_base_hash] || 0;
+      const legacyDuplicateKey = legacyBalanceDuplicateKey(row);
+      if (row.occurrence_index <= existingOccurrenceCount || (legacyDuplicateKey ? existingLegacyBalanceKeys.has(legacyDuplicateKey) : false)) {
         skippedDuplicates++;
         continue;
       }
@@ -843,6 +953,8 @@ export default function HomePage({
         source_filename: row.source_filename,
         import_batch_id: batchId,
         transaction_hash: row.transaction_hash,
+        canonical_base_hash: row.canonical_base_hash,
+        occurrence_index: row.occurrence_index,
         action: row.action,
         category: row.category,
         category_type: row.category_type,
@@ -869,8 +981,9 @@ export default function HomePage({
       }
 
       importedRows++;
-      existingKeys.add(row.transaction_key);
-      existingKeys.add(row.transaction_hash);
+      existingOccurrenceCounts[row.canonical_base_hash] = existingOccurrenceCount + 1;
+      const insertedLegacyKey = legacyBalanceDuplicateKey(row);
+      if (insertedLegacyKey) existingLegacyBalanceKeys.add(insertedLegacyKey);
     }
 
     if (batchId) {
@@ -893,8 +1006,8 @@ export default function HomePage({
       fallbackMode,
     });
     alert([
-      `Imported bank transactions: ${importedRows}`,
-      `Skipped duplicates: ${skippedDuplicates}`,
+      `Inserted bank transactions: ${importedRows}`,
+      `Skipped existing transactions: ${skippedDuplicates}`,
       `Rejected CSV rows: ${preview?.rejectedRows.length || 0}`,
       ...(failed ? [`Failed rows: ${failed}`] : []),
       fallbackMode ? "Enhanced import fields need the Supabase migration before full batch/review metadata can be stored." : "Import batch recorded.",
@@ -1742,7 +1855,7 @@ export default function HomePage({
                 {bankImportResult && (
                   <div className="rounded-xl bg-[#252a34] p-3 text-sm">
                     <p className="font-bold">Import result</p>
-                    <p className={theme.muted}>Imported: {bankImportResult.importedRows} · Duplicates: {bankImportResult.duplicateRows} · Rejected: {bankImportResult.rejectedRows}</p>
+                    <p className={theme.muted}>Inserted: {bankImportResult.importedRows} · Skipped existing: {bankImportResult.duplicateRows} · Rejected: {bankImportResult.rejectedRows}</p>
                     {bankImportResult.fallbackMode && <p className="mt-1 text-xs text-red-200">Run the Supabase migration to enable batch IDs, hashes and review metadata.</p>}
                   </div>
                 )}
@@ -1754,7 +1867,10 @@ export default function HomePage({
                 <div className="space-y-4">
                   <div className="grid grid-cols-2 gap-2">
                     <Kpi title="Valid rows" value={String(bankImportPreview.validRows.length)} />
-                    <Kpi title="Possible duplicates" value={String(bankImportPreview.duplicateCount)} />
+                    <Kpi title="Total CSV rows" value={String(bankImportPreview.totalRows)} />
+                    <Kpi title="Already imported" value={String(bankImportPreview.alreadyImportedRows)} />
+                    <Kpi title="Genuinely new" value={String(bankImportPreview.genuinelyNewRows)} />
+                    <Kpi title="Repeated identical occurrences" value={String(bankImportPreview.repeatedIdenticalOccurrences)} />
                     <Kpi title="Rejected rows" value={String(bankImportPreview.rejectedRows.length)} />
                     <Kpi title="Total money in" value={money(bankImportPreview.totalMoneyIn)} />
                     <Kpi title="Total money out" value={money(bankImportPreview.totalMoneyOut)} />

@@ -19,6 +19,16 @@ export function normaliseDescription(value: string) {
   return value.trim().replace(/\s+/g, " ").toUpperCase();
 }
 
+export function normaliseCanonicalDescription(value: string) {
+  return value
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function parseMoneyToPence(value: string | number | null | undefined) {
   if (typeof value === "number") return Math.round(value * 100);
   const cleaned = String(value ?? "")
@@ -135,6 +145,38 @@ export function createTransactionHash({
     hash = Math.imul(hash, 16777619);
   }
   return `sf_${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function stableHash(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index++) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+export function createCanonicalTransactionBase({
+  transactionDate,
+  description,
+  amountPence,
+}: {
+  transactionDate: string;
+  description: string;
+  amountPence: number;
+}) {
+  const direction = determineDirection(amountPence);
+  const source = [
+    transactionDate,
+    normaliseCanonicalDescription(description),
+    String(amountPence),
+    direction,
+  ].join("|");
+  return `sf_base_${stableHash(source)}`;
+}
+
+export function createCanonicalOccurrenceHash(baseFingerprint: string, occurrenceIndex: number) {
+  return `${baseFingerprint}_${String(occurrenceIndex).padStart(3, "0")}`;
 }
 
 export function getCurrentTaxYearStart(today: string) {
