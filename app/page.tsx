@@ -204,6 +204,11 @@ type ExistingBankDuplicateRow = {
   balance?: number | string | null;
 };
 
+type BankDuplicateCollapseResult = {
+  rows: BankTransaction[];
+  hiddenDuplicateRows: BankTransaction[];
+};
+
 type ImportResult = {
   importedRows: number;
   duplicateRows: number;
@@ -380,6 +385,7 @@ export default function HomePage({
   const [jobs, setJobs] = useState<Job[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [bankTransactions, setBankTransactions] = useState<BankTransaction[]>([]);
+  const [hiddenDuplicateBankRows, setHiddenDuplicateBankRows] = useState<BankTransaction[]>([]);
   const [bankRows, setBankRows] = useState<BankRow[]>([]);
   const [bankImportPreview, setBankImportPreview] = useState<BankImportPreview | null>(null);
   const [bankImportResult, setBankImportResult] = useState<ImportResult | null>(null);
@@ -442,7 +448,9 @@ export default function HomePage({
       .order("priority", { ascending: true });
     setJobs((jobsResult.data || []) as Job[]);
     setExpenses((expensesResult.data || []) as Expense[]);
-    setBankTransactions((bankResult.data || []) as BankTransaction[]);
+    const collapsedBankRows = collapseBankDuplicatesForDisplay((bankResult.data || []) as BankTransaction[]);
+    setBankTransactions(collapsedBankRows.rows);
+    setHiddenDuplicateBankRows(collapsedBankRows.hiddenDuplicateRows);
     if (!rulesResult.error) setCategorisationRules((rulesResult.data || []) as CategorisationRule[]);
   }
 
@@ -635,6 +643,77 @@ export default function HomePage({
 
   function getRowValue(row: Record<string, string>, column?: string) {
     return column ? row[column]?.trim() || "" : "";
+  }
+
+  function isUsefulBankCategory(category?: string | null) {
+    return Boolean(category && category !== "Miscellaneous" && category !== "Other Income");
+  }
+
+  function bankDuplicateDisplayKey(row: {
+    description?: string | null;
+    amount?: number | string | null;
+    balance?: number | string | null;
+  }) {
+    const amountPence = parseMoneyToPence(row.amount);
+    const balancePence = parseMoneyToPence(row.balance);
+    if (amountPence === null || balancePence === null) return null;
+    return [
+      normaliseCanonicalDescription(row.description || ""),
+      String(amountPence),
+      String(balancePence),
+    ].join("|");
+  }
+
+  function bankSurvivorScore(row: BankTransaction) {
+    const matched = row.matched_job_id || row.matched_income_id || row.matched_expense_id ? 1_000_000 : 0;
+    const reviewed = row.review_status === "reviewed" ? 100_000 : 0;
+    const usefulCategory = isUsefulBankCategory(row.category) ? 10_000 : 0;
+    const notes = row.notes?.trim() ? 1_000 : 0;
+    const importedFromCsv = row.source_filename ? 100 : 0;
+    return matched + reviewed + usefulCategory + notes + importedFromCsv;
+  }
+
+  function chooseBankDisplaySurvivor(current: BankTransaction, candidate: BankTransaction) {
+    const scoreDifference = bankSurvivorScore(candidate) - bankSurvivorScore(current);
+    if (scoreDifference > 0) return candidate;
+    if (scoreDifference < 0) return current;
+    const currentDate = current.transaction_date || "";
+    const candidateDate = candidate.transaction_date || "";
+    if (candidateDate > currentDate) return candidate;
+    if (candidateDate < currentDate) return current;
+    const currentCreated = current.created_at || "";
+    const candidateCreated = candidate.created_at || "";
+    return candidateCreated > currentCreated ? candidate : current;
+  }
+
+  function collapseBankDuplicatesForDisplay(rows: BankTransaction[]): BankDuplicateCollapseResult {
+    const chosenByKey = new Map<string, BankTransaction>();
+    const hiddenById = new Map<string, BankTransaction>();
+    const passthroughRows: BankTransaction[] = [];
+
+    rows.forEach((row) => {
+      const key = bankDuplicateDisplayKey(row);
+      if (!key) {
+        passthroughRows.push(row);
+        return;
+      }
+
+      const current = chosenByKey.get(key);
+      if (!current) {
+        chosenByKey.set(key, row);
+        return;
+      }
+
+      const survivor = chooseBankDisplaySurvivor(current, row);
+      const hidden = survivor === current ? row : current;
+      chosenByKey.set(key, survivor);
+      hiddenById.set(hidden.id || hidden.transaction_key || hidden.transaction_hash || `${key}-${hidden.created_at || ""}`, hidden);
+    });
+
+    return {
+      rows: [...passthroughRows, ...chosenByKey.values()].sort((a, b) => (b.transaction_date || "").localeCompare(a.transaction_date || "")),
+      hiddenDuplicateRows: [...hiddenById.values()],
+    };
   }
 
   function canonicalBaseForExistingBankRow(row: {
@@ -1362,11 +1441,11 @@ export default function HomePage({
     unreviewedTransactions: bankTransactions.filter((row) => (row.review_status || "needs_review") !== "reviewed").length,
     unmatchedIncome: jobs.filter((job) => !job.notes?.includes("Matched bank transaction")).length,
     unmatchedExpenses: expenses.filter((expense) => !expense.notes?.includes("Matched bank transaction")).length,
-    possibleDuplicates: bankTransactions.length - new Set(bankTransactions.map((row) => row.transaction_hash || row.transaction_key)).size,
+    possibleDuplicates: hiddenDuplicateBankRows.length,
     parsingErrors: bankImportPreview?.rejectedRows.length || bankImportResult?.rejectedRows || 0,
     missingDates: [...jobs.filter((job) => !job.job_date), ...expenses.filter((expense) => !expense.expense_date), ...bankTransactions.filter((row) => !row.transaction_date)].length,
     invalidAmounts: [...jobs.filter((job) => !Number(job.amount_charged)), ...expenses.filter((expense) => !Number(expense.amount)), ...bankTransactions.filter((row) => !Number(row.amount))].length,
-  }), [bankImportPreview?.rejectedRows.length, bankImportResult?.rejectedRows, bankTransactions, expenses, jobs]);
+  }), [bankImportPreview?.rejectedRows.length, bankImportResult?.rejectedRows, bankTransactions, expenses, hiddenDuplicateBankRows.length, jobs]);
 
   const quarterlySummary = useMemo(() => (
     getTaxYearQuarters(totals.taxStart).map((quarter) => {
@@ -1933,6 +2012,15 @@ export default function HomePage({
               <Kpi title="Uncategorised" value={String(bankSummary.uncategorised)} />
               <Kpi title="Matched Transactions" value={String(bankSummary.matched)} />
             </section>
+
+            {hiddenDuplicateBankRows.length > 0 && (
+              <div className="rounded-2xl border border-amber-400/40 bg-amber-500/10 p-4 text-sm text-amber-100">
+                <p className="font-black">Hidden likely duplicate rows: {hiddenDuplicateBankRows.length}</p>
+                <p className="mt-1 text-xs text-amber-100/80">
+                  The bank feed is showing the best copy only when rows have the same normalised description, signed amount and running balance. No Supabase rows have been deleted.
+                </p>
+              </div>
+            )}
 
             <Panel title="Bank transaction filters">
               <div className="grid gap-3 sm:grid-cols-2">
