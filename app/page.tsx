@@ -200,6 +200,18 @@ type BankFilters = {
   sort: "newest" | "oldest" | "highest" | "lowest";
 };
 
+type CategorisationRule = {
+  id?: string;
+  rule_name: string;
+  match_text: string;
+  match_type: "contains" | "starts_with" | "exact";
+  money_direction: "incoming" | "outgoing" | "either";
+  assigned_category: string;
+  assigned_category_type: CategoryType;
+  active: boolean;
+  priority: number;
+};
+
 type TaxSettings = {
   otherIncomeThisTaxYear: number;
   personalAllowance: number;
@@ -285,6 +297,53 @@ function isStandaloneProfitBankRow(row: BankTransaction) {
   return isReviewedBankRow(row) && !isMatchedBankRow(row) && !isUncategorisedBankRow(row) && affectsProfit(getBankCategoryType(row));
 }
 
+function inferCategoryTypeFromCategory(category: string, amount: number): CategoryType {
+  if (incomeCategories.includes(category)) return "income";
+  if (expenseCategories.includes(category)) return "expense";
+  if (category === "Transfer between accounts" || category === "Transfer / Ignore") return "transfer";
+  if (category === "Owner withdrawal" || category === "Owner contribution" || category === "Drawings") return "owner";
+  if (category === "Tax payment") return "tax";
+  if (category === "Personal transaction" || category === "Ignore") return "ignored";
+  return amount >= 0 ? "income" : "expense";
+}
+
+function actionFromCategoryType(categoryType: CategoryType) {
+  if (categoryType === "income") return "income";
+  if (categoryType === "expense") return "expense";
+  if (categoryType === "owner") return "drawings";
+  return "ignore";
+}
+
+function categoryOptionsForAmount(amount: number) {
+  return amount >= 0 ? incomeCategories : expenseCategories;
+}
+
+function bankReviewCategoryOptions(transaction: BankTransaction) {
+  const current = transaction.category || "";
+  return Array.from(new Set([current, ...categoryOptionsForAmount(Number(transaction.amount || 0))].filter(Boolean)));
+}
+
+function deriveRuleMatchText(description: string) {
+  const words = description
+    .toUpperCase()
+    .replace(/[^A-Z0-9 ]/g, " ")
+    .split(/\s+/)
+    .filter((word) => word.length >= 3 && !/^\d+$/.test(word));
+  return words[0] || description.trim().slice(0, 40).toUpperCase();
+}
+
+function ruleMatches(rule: CategorisationRule, description: string, amount: number) {
+  if (!rule.active) return false;
+  const direction = amount >= 0 ? "incoming" : "outgoing";
+  if (rule.money_direction !== "either" && rule.money_direction !== direction) return false;
+  const haystack = description.toUpperCase();
+  const needle = rule.match_text.toUpperCase();
+  if (!needle) return false;
+  if (rule.match_type === "exact") return haystack === needle;
+  if (rule.match_type === "starts_with") return haystack.startsWith(needle);
+  return haystack.includes(needle);
+}
+
 export default function HomePage({
   initialView = "home",
   initialHsbcStatus = null,
@@ -301,6 +360,9 @@ export default function HomePage({
   const [bankImportPreview, setBankImportPreview] = useState<BankImportPreview | null>(null);
   const [bankImportResult, setBankImportResult] = useState<ImportResult | null>(null);
   const [selectedBankTransaction, setSelectedBankTransaction] = useState<BankTransaction | null>(null);
+  const [rememberBankRule, setRememberBankRule] = useState(false);
+  const [showAdvancedBankReview, setShowAdvancedBankReview] = useState(false);
+  const [categorisationRules, setCategorisationRules] = useState<CategorisationRule[]>([]);
   const [bankFilters, setBankFilters] = useState<BankFilters>(initialBankFilters);
   const [view, setView] = useState<SmartFobsView>(initialView);
   const [showForm, setShowForm] = useState<"job" | "expense" | null>(null);
@@ -349,9 +411,15 @@ export default function HomePage({
       supabase.from("smartfobs_expenses").select("*").order("expense_date", { ascending: false }),
       supabase.from("smartfobs_bank_transactions").select("*").order("transaction_date", { ascending: false }).limit(500),
     ]);
+    const rulesResult = await supabase
+      .from("smartfobs_categorisation_rules")
+      .select("*")
+      .eq("active", true)
+      .order("priority", { ascending: true });
     setJobs((jobsResult.data || []) as Job[]);
     setExpenses((expensesResult.data || []) as Expense[]);
     setBankTransactions((bankResult.data || []) as BankTransaction[]);
+    if (!rulesResult.error) setCategorisationRules((rulesResult.data || []) as CategorisationRule[]);
   }
 
   function updateStockSetting(field: keyof StockSettings, value: number) {
@@ -651,6 +719,15 @@ export default function HomePage({
       const transactionKey = transactionHash;
       const duplicate = existingKeys.has(transactionHash) || seenInFile.has(transactionHash);
       seenInFile.add(transactionHash);
+      const rule = categorisationRules.find((candidate) => ruleMatches(candidate, description, amount));
+      const suggestedTreatment = rule
+        ? {
+            action: actionFromCategoryType(rule.assigned_category_type) as BankRow["action"],
+            category: rule.assigned_category,
+            category_type: rule.assigned_category_type,
+            review_status: "rule_applied" as ReviewStatus,
+          }
+        : suggestBankTreatment(description, amount);
 
       validRows.push({
         transaction_key: transactionKey,
@@ -666,7 +743,7 @@ export default function HomePage({
         transaction_hash: transactionHash,
         notes: "",
         duplicate,
-        ...suggestBankTreatment(description, amount),
+        ...suggestedTreatment,
       });
     });
 
@@ -1212,11 +1289,16 @@ export default function HomePage({
 
   async function saveBankTransactionChanges(updated: BankTransaction) {
     if (!updated.id) return alert("This transaction cannot be updated until it has been imported.");
+    const amount = Number(updated.amount || 0);
+    const category = updated.category || (amount >= 0 ? incomeCategories[0] : expenseCategories[0]);
+    const categoryType = inferCategoryTypeFromCategory(category, amount);
+    const action = actionFromCategoryType(categoryType);
 
     const enhancedUpdate = {
-      category: updated.category,
-      category_type: updated.category_type || categoryTypeForAction(updated.action),
-      review_status: updated.review_status || "needs_review",
+      category,
+      action,
+      category_type: categoryType,
+      review_status: "reviewed",
       notes: updated.notes || "",
       matched_job_id: updated.matched_job_id || null,
       matched_income_id: updated.matched_income_id || null,
@@ -1233,15 +1315,38 @@ export default function HomePage({
       const { error: fallbackError } = await supabase
         .from("smartfobs_bank_transactions")
         .update({
-          category: updated.category,
-          action: updated.action,
+          category,
+          action,
         })
         .eq("id", updated.id);
       if (fallbackError) return alert(fallbackError.message);
     }
 
+    if (rememberBankRule) {
+      const matchText = deriveRuleMatchText(updated.description);
+      const { error: ruleError } = await supabase.from("smartfobs_categorisation_rules").insert({
+        rule_name: `${matchText} → ${category}`,
+        match_text: matchText,
+        match_type: "contains",
+        money_direction: amount >= 0 ? "incoming" : "outgoing",
+        assigned_category: category,
+        assigned_category_type: categoryType,
+        active: true,
+        priority: 50,
+      });
+      if (ruleError) alert("Transaction saved, but the remember rule could not be saved. Run the bookkeeping migration if it has not been applied yet.");
+    }
+
     setSelectedBankTransaction(null);
+    setRememberBankRule(false);
+    setShowAdvancedBankReview(false);
     await loadData();
+  }
+
+  function openBankReview(row: BankTransaction) {
+    setSelectedBankTransaction(row);
+    setRememberBankRule(false);
+    setShowAdvancedBankReview(false);
   }
 
   function bestJobMatches(transaction: BankTransaction) {
@@ -1344,7 +1449,7 @@ export default function HomePage({
               {bankTransactions.filter((row) => (row.review_status || "needs_review") !== "reviewed").slice(0, 5).length ? (
                 <div className="space-y-3">
                   {bankTransactions.filter((row) => (row.review_status || "needs_review") !== "reviewed").slice(0, 5).map((row) => (
-                    <button key={row.id || row.transaction_key} type="button" onClick={() => { setView("bank"); setSelectedBankTransaction(row); }} className="w-full rounded-xl bg-[#252a34] p-3 text-left">
+                    <button key={row.id || row.transaction_key} type="button" onClick={() => { setView("bank"); openBankReview(row); }} className="w-full rounded-xl bg-[#252a34] p-3 text-left">
                       <span className="block font-bold">{row.description}</span>
                       <span className={`block text-xs ${theme.faint}`}>{formatUKDate(row.transaction_date)} · {row.category || "Uncategorised"} · {money(Number(row.amount || 0))}</span>
                     </button>
@@ -1741,7 +1846,7 @@ export default function HomePage({
                     const reviewStatus = row.review_status || (row.category === "Miscellaneous" || row.category === "Other Income" ? "needs_review" : "reviewed");
                     const matched = Boolean(row.matched_job_id || row.matched_income_id || row.matched_expense_id);
                     return (
-                      <button key={row.id || row.transaction_key} type="button" onClick={() => setSelectedBankTransaction(row)} className={`w-full rounded-xl bg-[#252a34] p-3 text-left ${reviewStatus !== "reviewed" ? "ring-1 ring-red-400/50" : ""}`}>
+                      <button key={row.id || row.transaction_key} type="button" onClick={() => openBankReview(row)} className={`w-full rounded-xl bg-[#252a34] p-3 text-left ${reviewStatus !== "reviewed" ? "ring-1 ring-red-400/50" : ""}`}>
                         <span className="flex justify-between gap-3">
                           <span className="min-w-0">
                             <span className="block truncate font-bold">{row.description}</span>
@@ -1929,34 +2034,49 @@ export default function HomePage({
             </div>
 
             <div className="rounded-xl bg-[#252a34] p-3">
+              <p className={`text-xs ${theme.faint}`}>Description</p>
               <p className="font-bold">{selectedBankTransaction.description}</p>
+              <p className={`mt-3 text-xs ${theme.faint}`}>Amount</p>
+              <p className={`text-2xl font-black ${Number(selectedBankTransaction.amount || 0) >= 0 ? theme.accentText : "text-red-300"}`}>
+                {money(Number(selectedBankTransaction.amount || 0))}
+              </p>
               {selectedBankTransaction.bank_reference && <p className={`text-xs ${theme.faint}`}>Reference: {selectedBankTransaction.bank_reference}</p>}
-              <p className={`text-xs ${theme.faint}`}>Match status: {selectedBankTransaction.matched_job_id || selectedBankTransaction.matched_income_id || selectedBankTransaction.matched_expense_id ? "Matched" : "Unmatched"}</p>
             </div>
 
             <Select
-              label="Category type"
-              value={String(selectedBankTransaction.category_type || categoryTypeForAction(selectedBankTransaction.action))}
+              label="Category"
+              value={selectedBankTransaction.category || categoryOptionsForAmount(Number(selectedBankTransaction.amount || 0))[0]}
               onChange={(value) => {
-                const categoryType = value as CategoryType;
+                const amount = Number(selectedBankTransaction.amount || 0);
+                const categoryType = inferCategoryTypeFromCategory(value, amount);
                 setSelectedBankTransaction({
                   ...selectedBankTransaction,
+                  category: value,
                   category_type: categoryType,
-                  action: categoryType === "income" ? "income" : categoryType === "expense" ? "expense" : categoryType === "owner" ? "drawings" : "ignore",
+                  action: actionFromCategoryType(categoryType),
                 });
               }}
-              options={["income", "expense", "transfer", "owner", "tax", "ignored"]}
+              options={bankReviewCategoryOptions(selectedBankTransaction)}
             />
-            <Input label="Category" value={selectedBankTransaction.category || ""} onChange={(value) => setSelectedBankTransaction({ ...selectedBankTransaction, category: value })} />
-            <Select
-              label="Review status"
-              value={String(selectedBankTransaction.review_status || "needs_review")}
-              onChange={(value) => setSelectedBankTransaction({ ...selectedBankTransaction, review_status: value as ReviewStatus })}
-              options={["needs_review", "rule_applied", "reviewed"]}
-            />
+            <label className="flex items-center gap-3 rounded-2xl bg-[#252a34] p-4">
+              <input
+                type="checkbox"
+                checked={rememberBankRule}
+                onChange={(event) => setRememberBankRule(event.target.checked)}
+                className="h-5 w-5 accent-[#d7d7d7]"
+              />
+              <span className="text-sm font-bold">Remember this for future imports</span>
+            </label>
             <Input label="Notes" value={selectedBankTransaction.notes || ""} onChange={(value) => setSelectedBankTransaction({ ...selectedBankTransaction, notes: value })} />
 
-            <div className="grid grid-cols-2 gap-2">
+            <button type="button" onClick={() => setShowAdvancedBankReview((open) => !open)} className={`w-full rounded-2xl ${theme.card} p-3 text-left font-bold`}>
+              Advanced {showAdvancedBankReview ? "−" : "+"}
+            </button>
+
+            {showAdvancedBankReview && (
+              <div className="space-y-4">
+                <p className={`text-xs ${theme.faint}`}>Use these only for personal movements, transfers, drawings, or manual matching.</p>
+                <div className="grid grid-cols-2 gap-2">
               <button type="button" onClick={() => setSelectedBankTransaction({ ...selectedBankTransaction, category: "Personal transaction", category_type: "ignored", action: "ignore", review_status: "reviewed" })} className={`rounded-xl ${theme.card} p-3 text-sm font-bold`}>
                 Personal / non-business
               </button>
@@ -1969,7 +2089,7 @@ export default function HomePage({
               <button type="button" onClick={() => setSelectedBankTransaction({ ...selectedBankTransaction, matched_job_id: null, matched_income_id: null, matched_expense_id: null })} className={`rounded-xl ${theme.card} p-3 text-sm font-bold`}>
                 Remove match
               </button>
-            </div>
+                </div>
 
             {Number(selectedBankTransaction.amount || 0) >= 0 ? (
               <div className="space-y-2">
@@ -1992,9 +2112,11 @@ export default function HomePage({
                 ))}
               </div>
             )}
+              </div>
+            )}
 
             <button type="button" onClick={() => void saveBankTransactionChanges(selectedBankTransaction)} className={`min-h-14 w-full rounded-2xl ${theme.accent} p-4 font-black`}>
-              Save Bank Review
+              Save
             </button>
           </div>
         </div>
