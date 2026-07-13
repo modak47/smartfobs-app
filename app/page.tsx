@@ -1,17 +1,18 @@
 "use client";
 
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import { supabase } from "@/lib/supabase";
 import {
+  affectsProfit,
   createTransactionHash,
+  determineDirection,
   formatGBP,
   formatUKDate,
   getCurrentTaxYearStart,
   getTaxYearEnd,
   getTaxYearQuarters,
   isInDateRange,
-  determineDirection,
   parseMoneyToPence,
   parseUKDate,
   penceToPounds,
@@ -225,6 +226,18 @@ type HsbcCallbackStatus = "callback-received" | "error" | "invalid-callback";
 
 type SmartFobsView = "home" | "jobs" | "expenses" | "reports" | "bank";
 
+const defaultBankFilters: BankFilters = {
+  search: "",
+  dateFrom: "",
+  dateTo: "",
+  direction: "all",
+  category: "all",
+  reviewStatus: "all",
+  match: "all",
+  importBatch: "all",
+  sort: "newest",
+};
+
 const defaultStockSettings: StockSettings = {
   motorcycleStockCount: 0,
   motorcycleStockCostValue: 0,
@@ -247,12 +260,39 @@ const defaultTaxSettings: TaxSettings = {
   taxSavingsAlreadySetAside: 0,
 };
 
+function getBankCategoryType(row: BankTransaction): CategoryType {
+  const raw = String(row.category_type || "").toLowerCase();
+  if (["income", "expense", "transfer", "owner", "tax", "ignored"].includes(raw)) return raw as CategoryType;
+  if (row.action === "income") return "income";
+  if (row.action === "expense") return "expense";
+  if (row.action === "drawings") return "owner";
+  return "ignored";
+}
+
+function isUncategorisedBankRow(row: BankTransaction) {
+  return !row.category || row.category === "Miscellaneous" || row.category === "Other Income";
+}
+
+function isReviewedBankRow(row: BankTransaction) {
+  return (row.review_status || "needs_review") === "reviewed";
+}
+
+function isMatchedBankRow(row: BankTransaction) {
+  return Boolean(row.matched_job_id || row.matched_income_id || row.matched_expense_id);
+}
+
+function isStandaloneProfitBankRow(row: BankTransaction) {
+  return isReviewedBankRow(row) && !isMatchedBankRow(row) && !isUncategorisedBankRow(row) && affectsProfit(getBankCategoryType(row));
+}
+
 export default function HomePage({
   initialView = "home",
   initialHsbcStatus = null,
+  initialBankFilters = defaultBankFilters,
 }: {
   initialView?: SmartFobsView;
   initialHsbcStatus?: HsbcCallbackStatus | null;
+  initialBankFilters?: BankFilters;
 }) {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -261,17 +301,7 @@ export default function HomePage({
   const [bankImportPreview, setBankImportPreview] = useState<BankImportPreview | null>(null);
   const [bankImportResult, setBankImportResult] = useState<ImportResult | null>(null);
   const [selectedBankTransaction, setSelectedBankTransaction] = useState<BankTransaction | null>(null);
-  const [bankFilters, setBankFilters] = useState<BankFilters>({
-    search: "",
-    dateFrom: "",
-    dateTo: "",
-    direction: "all",
-    category: "all",
-    reviewStatus: "all",
-    match: "all",
-    importBatch: "all",
-    sort: "newest",
-  });
+  const [bankFilters, setBankFilters] = useState<BankFilters>(initialBankFilters);
   const [view, setView] = useState<SmartFobsView>(initialView);
   const [showForm, setShowForm] = useState<"job" | "expense" | null>(null);
   const [search, setSearch] = useState("");
@@ -888,6 +918,40 @@ export default function HomePage({
     })));
   }
 
+  function getMonthRange(monthKey: string) {
+    const from = `${monthKey}-01`;
+    const to = `${addMonths(monthKey, 1)}-01`;
+    const endDate = new Date(`${to}T12:00:00`);
+    endDate.setDate(endDate.getDate() - 1);
+    return { from, to: getLocalDateKey(endDate) };
+  }
+
+  const getStandaloneBankTotals = useCallback((from: string, to: string) => {
+    const rows = bankTransactions.filter((row) => row.transaction_date >= from && row.transaction_date <= to && isStandaloneProfitBankRow(row));
+    const income = rows.filter((row) => Number(row.amount || 0) > 0).reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    const expenses = rows.filter((row) => Number(row.amount || 0) < 0).reduce((sum, row) => sum + Math.abs(Number(row.amount || 0)), 0);
+    return { income, expenses, rows };
+  }, [bankTransactions]);
+
+  function goToBankFilters(filters: Partial<BankFilters>) {
+    const nextFilters = { ...defaultBankFilters, ...filters };
+    setBankFilters(nextFilters);
+    setView("bank");
+    const params = new URLSearchParams();
+    if (nextFilters.dateFrom) params.set("dateFrom", nextFilters.dateFrom);
+    if (nextFilters.dateTo) params.set("dateTo", nextFilters.dateTo);
+    if (nextFilters.reviewStatus !== "all") params.set("reviewStatus", nextFilters.reviewStatus === "needs_review" ? "unreviewed" : nextFilters.reviewStatus);
+    if (nextFilters.category !== "all") params.set("category", nextFilters.category);
+    if (nextFilters.match !== "all") params.set("matched", nextFilters.match === "matched" ? "true" : "false");
+    if (nextFilters.direction !== "all") params.set("direction", nextFilters.direction);
+    window.history.pushState(null, "", `/bank${params.toString() ? `?${params.toString()}` : ""}`);
+  }
+
+  function clearBankFilters() {
+    setBankFilters(defaultBankFilters);
+    window.history.pushState(null, "", "/bank");
+  }
+
   const totals = useMemo(() => {
     const now = new Date(`${today}T12:00:00`);
     const startOfWeek = new Date(now);
@@ -899,16 +963,21 @@ export default function HomePage({
     const sumJobs = (from: string, to = today) => jobs.filter((j) => j.job_date >= from && j.job_date <= to).reduce((sum, j) => sum + Number(j.amount_charged || 0), 0);
     const sumExpenses = (from: string, to = today) => expenses.filter((e) => e.expense_date >= from && e.expense_date <= to).reduce((sum, e) => sum + Number(e.amount || 0), 0);
     const period = (from: string, to = today) => {
-      const income = sumJobs(from, to);
-      const expensesTotal = sumExpenses(from, to);
+      const bankTotals = getStandaloneBankTotals(from, to);
+      const income = sumJobs(from, to) + bankTotals.income;
+      const expensesTotal = sumExpenses(from, to) + bankTotals.expenses;
       return { income, expenses: expensesTotal, profit: income - expensesTotal };
     };
-    const allIncome = jobs.reduce((sum, j) => sum + Number(j.amount_charged || 0), 0);
-    const allExpenses = expenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
-    const selectedMonthJobs = jobs.filter((job) => isDateInMonth(job.job_date, selectedMonth));
-    const selectedMonthExpenses = expenses.filter((expense) => isDateInMonth(expense.expense_date, selectedMonth));
-    const selectedMonthIncome = selectedMonthJobs.reduce((sum, job) => sum + Number(job.amount_charged || 0), 0);
-    const selectedMonthExpenseTotal = selectedMonthExpenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
+    const allBankTotals = getStandaloneBankTotals("0000-01-01", "9999-12-31");
+    const allIncome = jobs.reduce((sum, j) => sum + Number(j.amount_charged || 0), 0) + allBankTotals.income;
+    const allExpenses = expenses.reduce((sum, e) => sum + Number(e.amount || 0), 0) + allBankTotals.expenses;
+    const selectedMonthRange = getMonthRange(selectedMonth);
+    const selectedMonthJobs = jobs.filter((job) => isInDateRange(job.job_date, selectedMonthRange.from, selectedMonthRange.to));
+    const selectedMonthExpenses = expenses.filter((expense) => isInDateRange(expense.expense_date, selectedMonthRange.from, selectedMonthRange.to));
+    const selectedMonthBankTotals = getStandaloneBankTotals(selectedMonthRange.from, selectedMonthRange.to);
+    const selectedMonthIncome = selectedMonthJobs.reduce((sum, job) => sum + Number(job.amount_charged || 0), 0) + selectedMonthBankTotals.income;
+    const selectedMonthExpenseTotal = selectedMonthExpenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0) + selectedMonthBankTotals.expenses;
+    const selectedMonthUnreviewedBank = bankTransactions.filter((row) => row.transaction_date >= selectedMonthRange.from && row.transaction_date <= selectedMonthRange.to && !isReviewedBankRow(row)).length;
 
     return {
       income: allIncome,
@@ -921,13 +990,18 @@ export default function HomePage({
         expenses: selectedMonthExpenseTotal,
         profit: selectedMonthIncome - selectedMonthExpenseTotal,
         jobs: selectedMonthJobs.length,
+        from: selectedMonthRange.from,
+        to: selectedMonthRange.to,
+        unreviewedBankTransactions: selectedMonthUnreviewedBank,
+        standaloneBankIncome: selectedMonthBankTotals.income,
+        standaloneBankExpenses: selectedMonthBankTotals.expenses,
       },
       taxYear: period(taxStart, taxEnd),
       taxStart,
       taxEnd,
       jobCount: jobs.length,
     };
-  }, [jobs, expenses, selectedMonth]);
+  }, [bankTransactions, expenses, getStandaloneBankTotals, jobs, selectedMonth]);
 
   const taxEstimate = useMemo(() => {
     const businessProfit = totals.taxYear.profit;
@@ -960,6 +1034,25 @@ export default function HomePage({
     };
   }, [taxSettings, totals.taxYear.profit]);
 
+  const reportDiagnostics = useMemo(() => {
+    if (process.env.NODE_ENV === "production") return null;
+    const monthRange = getMonthRange(selectedMonth);
+    const monthBank = bankTransactions.filter((row) => row.transaction_date >= monthRange.from && row.transaction_date <= monthRange.to);
+    return {
+      selectedMonth,
+      recordsCountedFromJobsIncome: jobs.filter((job) => isInDateRange(job.job_date, monthRange.from, monthRange.to)).length,
+      recordsCountedFromExpenses: expenses.filter((expense) => isInDateRange(expense.expense_date, monthRange.from, monthRange.to)).length,
+      standaloneBankIncomeCounted: monthBank.filter((row) => isStandaloneProfitBankRow(row) && Number(row.amount || 0) > 0).length,
+      standaloneBankExpensesCounted: monthBank.filter((row) => isStandaloneProfitBankRow(row) && Number(row.amount || 0) < 0).length,
+      matchedBankRowsExcluded: monthBank.filter(isMatchedBankRow).length,
+      excludedTransferOwnerPersonalTaxRows: monthBank.filter((row) => !affectsProfit(getBankCategoryType(row))).length,
+    };
+  }, [bankTransactions, expenses, jobs, selectedMonth]);
+
+  useEffect(() => {
+    if (reportDiagnostics) console.debug("SmartFobs report diagnostics", reportDiagnostics);
+  }, [reportDiagnostics]);
+
   const stockValues = useMemo(() => {
     const motorcycleExpectedGrossProfit = stockSettings.motorcycleExpectedSaleValue - stockSettings.motorcycleStockCostValue;
     const keyStockCostValue = stockSettings.keyStockCount * stockSettings.averageKeyCost;
@@ -988,11 +1081,27 @@ export default function HomePage({
       }, {})).sort((a, b) => b[1] - a[1]);
     const monthJobs = jobs.filter((job) => isDateInMonth(job.job_date, selectedMonth));
     const monthExpenses = expenses.filter((expense) => isDateInMonth(expense.expense_date, selectedMonth));
+    const { from, to } = getMonthRange(selectedMonth);
+    const monthBankRows = bankTransactions.filter((row) => row.transaction_date >= from && row.transaction_date <= to && isStandaloneProfitBankRow(row));
     return {
-      income: group(monthJobs, (j) => j.job_type || "Other Income", (j) => Number(j.amount_charged || 0)),
-      expenses: group(monthExpenses, (e) => e.category || "Miscellaneous", (e) => Number(e.amount || 0)),
+      income: group(
+        [
+          ...monthJobs.map((row) => ({ category: row.job_type || "Other Income", value: Number(row.amount_charged || 0) })),
+          ...monthBankRows.filter((row) => Number(row.amount || 0) > 0).map((row) => ({ category: row.category || "Other Income", value: Number(row.amount || 0) })),
+        ],
+        (row) => row.category,
+        (row) => row.value,
+      ),
+      expenses: group(
+        [
+          ...monthExpenses.map((row) => ({ category: row.category || "Miscellaneous", value: Number(row.amount || 0) })),
+          ...monthBankRows.filter((row) => Number(row.amount || 0) < 0).map((row) => ({ category: row.category || "Miscellaneous", value: Math.abs(Number(row.amount || 0)) })),
+        ],
+        (row) => row.category,
+        (row) => row.value,
+      ),
     };
-  }, [jobs, expenses, selectedMonth]);
+  }, [bankTransactions, expenses, jobs, selectedMonth]);
 
   const filteredJobs = jobs.filter((j) =>
     `${j.customer_name} ${j.dealer_name} ${j.vehicle} ${j.registration} ${j.job_type}`
@@ -1028,7 +1137,10 @@ export default function HomePage({
         bankFilters.direction === "all" ||
         (bankFilters.direction === "in" && amount > 0) ||
         (bankFilters.direction === "out" && amount < 0);
-      const matchesCategory = bankFilters.category === "all" || row.category === bankFilters.category;
+      const matchesCategory =
+        bankFilters.category === "all" ||
+        (bankFilters.category === "uncategorised" && isUncategorisedBankRow(row)) ||
+        row.category === bankFilters.category;
       const matchesReview = bankFilters.reviewStatus === "all" || reviewStatus === bankFilters.reviewStatus;
       const matchesMatched =
         bankFilters.match === "all" ||
@@ -1071,10 +1183,18 @@ export default function HomePage({
       const quarterJobs = jobs.filter((job) => isInDateRange(job.job_date, quarter.from, quarter.to));
       const quarterExpenses = expenses.filter((expense) => isInDateRange(expense.expense_date, quarter.from, quarter.to));
       const quarterBank = bankTransactions.filter((row) => isInDateRange(row.transaction_date, quarter.from, quarter.to));
-      const income = quarterJobs.reduce((sum, job) => sum + Number(job.amount_charged || 0), 0);
-      const expenseTotal = quarterExpenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
-      const uncategorised = quarterBank.filter((row) => !row.category || row.category === "Miscellaneous" || row.category === "Other Income").length;
-      const unreviewed = quarterBank.filter((row) => (row.review_status || "needs_review") !== "reviewed").length;
+      const quarterBankTotals = getStandaloneBankTotals(quarter.from, quarter.to);
+      const income = quarterJobs.reduce((sum, job) => sum + Number(job.amount_charged || 0), 0) + quarterBankTotals.income;
+      const expenseTotal = quarterExpenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0) + quarterBankTotals.expenses;
+      const uncategorised = quarterBank.filter(isUncategorisedBankRow).length;
+      const unreviewed = quarterBank.filter((row) => !isReviewedBankRow(row)).length;
+      const invalid = [
+        ...quarterJobs.filter((job) => !job.job_date || !Number(job.amount_charged)),
+        ...quarterExpenses.filter((expense) => !expense.expense_date || !Number(expense.amount)),
+        ...quarterBank.filter((row) => !row.transaction_date || !Number(row.amount)),
+      ].length;
+      const hasTransactions = quarterJobs.length > 0 || quarterExpenses.length > 0 || quarterBank.length > 0;
+      const needsReview = uncategorised > 0 || unreviewed > 0 || invalid > 0;
       return {
         ...quarter,
         income,
@@ -1082,10 +1202,11 @@ export default function HomePage({
         profit: income - expenseTotal,
         uncategorised,
         unreviewed,
-        status: uncategorised === 0 && unreviewed === 0 ? "Review complete" : "Needs review",
+        invalid,
+        status: !hasTransactions ? "No transactions" : needsReview ? "Needs review" : "Review complete",
       };
     })
-  ), [bankTransactions, expenses, jobs, totals.taxStart]);
+  ), [bankTransactions, expenses, getStandaloneBankTotals, jobs, totals.taxStart]);
 
   const needsReviewCount = bankRows.filter((row) => row.category === "Miscellaneous" || row.category === "Other Income" || row.review_status === "needs_review").length;
 
@@ -1277,6 +1398,14 @@ export default function HomePage({
                   <Kpi title="Profit" value={money(totals.selectedMonth.profit)} />
                   <Kpi title="Jobs" value={String(totals.selectedMonth.jobs)} />
                 </div>
+                <p className={`text-xs leading-relaxed ${theme.faint}`}>
+                  Calculated from reviewed bookkeeping records and eligible standalone bank transactions. Jobs are counted by job_date.
+                </p>
+                {totals.selectedMonth.unreviewedBankTransactions > 0 && (
+                  <p className="rounded-xl bg-red-500/10 p-3 text-xs text-red-200">
+                    {totals.selectedMonth.unreviewedBankTransactions} bank transactions still need review and may change these totals.
+                  </p>
+                )}
               </div>
             </Panel>
             <ReportPeriod title={`Tax year · ${totals.taxStart} to ${totals.taxEnd}`} totals={totals.taxYear} money={money} />
@@ -1395,7 +1524,7 @@ export default function HomePage({
                         <p className="font-black">{quarter.label} · {formatUKDate(quarter.from)} to {formatUKDate(quarter.to)}</p>
                         <p className={`text-xs ${theme.faint}`}>Uncategorised: {quarter.uncategorised} · Unreviewed: {quarter.unreviewed} · Not submitted</p>
                       </div>
-                      <span className={`rounded-full px-3 py-1 text-xs font-bold ${quarter.status === "Review complete" ? "bg-green-500/20 text-green-200" : "bg-red-500/20 text-red-200"}`}>
+                      <span className={`rounded-full px-3 py-1 text-xs font-bold ${quarter.status === "Review complete" ? "bg-green-500/20 text-green-200" : quarter.status === "No transactions" ? "bg-slate-500/20 text-slate-200" : "bg-red-500/20 text-red-200"}`}>
                         {quarter.status}
                       </span>
                     </div>
@@ -1404,6 +1533,18 @@ export default function HomePage({
                       <Kpi title="Expenses" value={money(quarter.expenses)} />
                       <Kpi title="Net profit" value={money(quarter.profit)} />
                     </div>
+                    <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                      <button type="button" onClick={() => goToBankFilters({ dateFrom: quarter.from, dateTo: quarter.to })} className={`rounded-xl ${theme.card} p-3 text-sm font-bold`}>
+                        Review all transactions
+                      </button>
+                      <button type="button" onClick={() => goToBankFilters({ dateFrom: quarter.from, dateTo: quarter.to, reviewStatus: "needs_review" })} className={`rounded-xl ${theme.card} p-3 text-sm font-bold`}>
+                        Review unreviewed
+                      </button>
+                      <button type="button" onClick={() => goToBankFilters({ dateFrom: quarter.from, dateTo: quarter.to, category: "uncategorised" })} className={`rounded-xl ${theme.card} p-3 text-sm font-bold`}>
+                        Review uncategorised
+                      </button>
+                    </div>
+                    <p className={`mt-2 text-xs ${theme.faint}`}>Submission status: Not submitted</p>
                   </div>
                 ))}
               </div>
@@ -1411,14 +1552,14 @@ export default function HomePage({
 
             <Panel title="Bookkeeping Checks">
               <div className="grid grid-cols-2 gap-2">
-                <Kpi title="Uncategorised transactions" value={String(qualityChecks.uncategorisedTransactions)} />
-                <Kpi title="Unreviewed transactions" value={String(qualityChecks.unreviewedTransactions)} />
-                <Kpi title="Unmatched income" value={String(qualityChecks.unmatchedIncome)} />
-                <Kpi title="Unmatched expenses" value={String(qualityChecks.unmatchedExpenses)} />
-                <Kpi title="Possible duplicates" value={String(qualityChecks.possibleDuplicates)} />
-                <Kpi title="Parsing errors" value={String(qualityChecks.parsingErrors)} />
-                <Kpi title="Missing dates" value={String(qualityChecks.missingDates)} />
-                <Kpi title="Invalid amounts" value={String(qualityChecks.invalidAmounts)} />
+                <CheckButton title="Uncategorised transactions" value={qualityChecks.uncategorisedTransactions} onClick={() => goToBankFilters({ category: "uncategorised" })} />
+                <CheckButton title="Unreviewed transactions" value={qualityChecks.unreviewedTransactions} onClick={() => goToBankFilters({ reviewStatus: "needs_review" })} />
+                <CheckButton title="Unmatched income" value={qualityChecks.unmatchedIncome} onClick={() => { setView("jobs"); window.history.pushState(null, "", "/?view=jobs&matched=false"); }} />
+                <CheckButton title="Unmatched expenses" value={qualityChecks.unmatchedExpenses} onClick={() => { setView("expenses"); window.history.pushState(null, "", "/?view=expenses&matched=false"); }} />
+                <CheckButton title="Possible duplicates" value={qualityChecks.possibleDuplicates} onClick={() => goToBankFilters({})} />
+                <CheckButton title="Parsing errors" value={qualityChecks.parsingErrors} onClick={() => setView("bank")} />
+                <CheckButton title="Missing dates" value={qualityChecks.missingDates} onClick={() => setView("bank")} />
+                <CheckButton title="Invalid amounts" value={qualityChecks.invalidAmounts} onClick={() => setView("bank")} />
               </div>
             </Panel>
 
@@ -1584,6 +1725,9 @@ export default function HomePage({
                 <Select label="Import batch" value={bankFilters.importBatch} onChange={(value) => setBankFilters((filters) => ({ ...filters, importBatch: value }))} options={["all", ...bankBatchIds]} />
                 <Select label="Sort" value={bankFilters.sort} onChange={(value) => setBankFilters((filters) => ({ ...filters, sort: value as BankFilters["sort"] }))} options={["newest", "oldest", "highest", "lowest"]} />
               </div>
+              <button type="button" onClick={clearBankFilters} className={`mt-3 w-full rounded-2xl ${theme.card} p-3 font-bold`}>
+                Clear filters
+              </button>
             </Panel>
 
             <Panel title={`${filteredBankTransactions.length} imported bank transactions`}>
@@ -1875,6 +2019,15 @@ function Kpi({ title, value, valueClassName = "" }: { title: string; value: stri
       <p className={`text-xs ${theme.muted}`}>{title}</p>
       <p className={`mt-1 break-words text-lg font-black sm:text-xl ${valueClassName}`}>{value}</p>
     </div>
+  );
+}
+
+function CheckButton({ title, value, onClick }: { title: string; value: number; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} className={`rounded-2xl ${theme.card} p-4 text-left active:scale-[0.98]`}>
+      <span className={`block text-xs ${theme.muted}`}>{title}</span>
+      <span className="mt-1 block break-words text-lg font-black sm:text-xl">{value}</span>
+    </button>
   );
 }
 
