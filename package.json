@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:bookkeeping": "node scripts/bookkeeping-duplicate-tests.mjs"
+    "test:bookkeeping": "node scripts/bookkeeping-duplicate-tests.mjs",
+    "test:reporting": "node scripts/run-reporting-tests.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.108.2",

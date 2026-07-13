@@ -1,10 +1,9 @@
 "use client";
 
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import { supabase } from "@/lib/supabase";
 import {
-  affectsProfit,
   createCanonicalOccurrenceHash,
   createCanonicalTransactionBase,
   determineDirection,
@@ -21,6 +20,11 @@ import {
   type CategoryType,
   type ReviewStatus,
 } from "@/lib/bookkeeping";
+import {
+  buildReportingReconciliation,
+  type ReportingMoneyRow,
+  type ReportingReconciliation,
+} from "@/lib/bookkeeping/reporting";
 
 function getLocalDateKey(date = new Date()) {
   const year = date.getFullYear();
@@ -42,10 +46,6 @@ function addMonths(monthKey: string, amount: number) {
 function formatMonthLabel(monthKey: string) {
   const [year, month] = monthKey.split("-").map(Number);
   return new Intl.DateTimeFormat("en-GB", { month: "long", year: "numeric" }).format(new Date(year, month - 1, 1));
-}
-
-function isDateInMonth(dateString: string, monthKey: string) {
-  return dateString.startsWith(`${monthKey}-`);
 }
 
 const today = getLocalDateKey();
@@ -301,29 +301,12 @@ const defaultTaxSettings: TaxSettings = {
   taxSavingsAlreadySetAside: 0,
 };
 
-function getBankCategoryType(row: BankTransaction): CategoryType {
-  const raw = String(row.category_type || "").toLowerCase();
-  if (["income", "expense", "transfer", "owner", "tax", "ignored"].includes(raw)) return raw as CategoryType;
-  if (row.action === "income") return "income";
-  if (row.action === "expense") return "expense";
-  if (row.action === "drawings") return "owner";
-  return "ignored";
-}
-
 function isUncategorisedBankRow(row: BankTransaction) {
   return !row.category || row.category === "Miscellaneous" || row.category === "Other Income";
 }
 
 function isReviewedBankRow(row: BankTransaction) {
   return (row.review_status || "needs_review") === "reviewed";
-}
-
-function isMatchedBankRow(row: BankTransaction) {
-  return Boolean(row.matched_job_id || row.matched_income_id || row.matched_expense_id);
-}
-
-function isStandaloneProfitBankRow(row: BankTransaction) {
-  return isReviewedBankRow(row) && !isMatchedBankRow(row) && !isUncategorisedBankRow(row) && affectsProfit(getBankCategoryType(row));
 }
 
 function inferCategoryTypeFromCategory(category: string, amount: number): CategoryType {
@@ -1195,13 +1178,6 @@ export default function HomePage({
     return { from, to: getLocalDateKey(endDate) };
   }
 
-  const getStandaloneBankTotals = useCallback((from: string, to: string) => {
-    const rows = bankTransactions.filter((row) => row.transaction_date >= from && row.transaction_date <= to && isStandaloneProfitBankRow(row));
-    const income = rows.filter((row) => Number(row.amount || 0) > 0).reduce((sum, row) => sum + Number(row.amount || 0), 0);
-    const expenses = rows.filter((row) => Number(row.amount || 0) < 0).reduce((sum, row) => sum + Math.abs(Number(row.amount || 0)), 0);
-    return { income, expenses, rows };
-  }, [bankTransactions]);
-
   function goToBankFilters(filters: Partial<BankFilters>) {
     const nextFilters = { ...defaultBankFilters, ...filters };
     setBankFilters(nextFilters);
@@ -1221,7 +1197,7 @@ export default function HomePage({
     window.history.pushState(null, "", "/bank");
   }
 
-  const totals = useMemo(() => {
+  const reporting = useMemo(() => {
     const now = new Date(`${today}T12:00:00`);
     const startOfWeek = new Date(now);
     const day = startOfWeek.getDay();
@@ -1229,48 +1205,51 @@ export default function HomePage({
     const weekStart = startOfWeek.toISOString().slice(0, 10);
     const taxStart = getCurrentTaxYearStart(today);
     const taxEnd = getTaxYearEnd(taxStart);
-    const sumJobs = (from: string, to = today) => jobs.filter((j) => j.job_date >= from && j.job_date <= to).reduce((sum, j) => sum + Number(j.amount_charged || 0), 0);
-    const sumExpenses = (from: string, to = today) => expenses.filter((e) => e.expense_date >= from && e.expense_date <= to).reduce((sum, e) => sum + Number(e.amount || 0), 0);
-    const period = (from: string, to = today) => {
-      const bankTotals = getStandaloneBankTotals(from, to);
-      const income = sumJobs(from, to) + bankTotals.income;
-      const expensesTotal = sumExpenses(from, to) + bankTotals.expenses;
-      return { income, expenses: expensesTotal, profit: income - expensesTotal };
-    };
-    const allBankTotals = getStandaloneBankTotals("0000-01-01", "9999-12-31");
-    const allIncome = jobs.reduce((sum, j) => sum + Number(j.amount_charged || 0), 0) + allBankTotals.income;
-    const allExpenses = expenses.reduce((sum, e) => sum + Number(e.amount || 0), 0) + allBankTotals.expenses;
     const selectedMonthRange = getMonthRange(selectedMonth);
-    const selectedMonthJobs = jobs.filter((job) => isInDateRange(job.job_date, selectedMonthRange.from, selectedMonthRange.to));
-    const selectedMonthExpenses = expenses.filter((expense) => isInDateRange(expense.expense_date, selectedMonthRange.from, selectedMonthRange.to));
-    const selectedMonthBankTotals = getStandaloneBankTotals(selectedMonthRange.from, selectedMonthRange.to);
-    const selectedMonthIncome = selectedMonthJobs.reduce((sum, job) => sum + Number(job.amount_charged || 0), 0) + selectedMonthBankTotals.income;
-    const selectedMonthExpenseTotal = selectedMonthExpenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0) + selectedMonthBankTotals.expenses;
-    const selectedMonthUnreviewedBank = bankTransactions.filter((row) => row.transaction_date >= selectedMonthRange.from && row.transaction_date <= selectedMonthRange.to && !isReviewedBankRow(row)).length;
+    const build = (from: string, to: string) => buildReportingReconciliation({ jobs, expenses, bankTransactions, from, to });
 
     return {
-      income: allIncome,
-      expenseTotal: allExpenses,
-      profit: allIncome - allExpenses,
-      today: period(today),
-      week: period(weekStart),
-      selectedMonth: {
-        income: selectedMonthIncome,
-        expenses: selectedMonthExpenseTotal,
-        profit: selectedMonthIncome - selectedMonthExpenseTotal,
-        jobs: selectedMonthJobs.length,
-        from: selectedMonthRange.from,
-        to: selectedMonthRange.to,
-        unreviewedBankTransactions: selectedMonthUnreviewedBank,
-        standaloneBankIncome: selectedMonthBankTotals.income,
-        standaloneBankExpenses: selectedMonthBankTotals.expenses,
-      },
-      taxYear: period(taxStart, taxEnd),
+      today: build(today, today),
+      week: build(weekStart, today),
+      selectedMonth: build(selectedMonthRange.from, selectedMonthRange.to),
+      taxYear: build(taxStart, taxEnd),
+      allTime: build("0000-01-01", "9999-12-31"),
       taxStart,
       taxEnd,
+    };
+  }, [bankTransactions, expenses, jobs, selectedMonth]);
+
+  const totals = useMemo(() => {
+    const selectedMonthJobs = reporting.selectedMonth.authoritativeJobIncome.length;
+
+    return {
+      income: reporting.allTime.finalIncome,
+      expenseTotal: reporting.allTime.finalExpenses,
+      profit: reporting.allTime.finalProfit,
+      today: { income: reporting.today.finalIncome, expenses: reporting.today.finalExpenses, profit: reporting.today.finalProfit },
+      week: { income: reporting.week.finalIncome, expenses: reporting.week.finalExpenses, profit: reporting.week.finalProfit },
+      selectedMonth: {
+        income: reporting.selectedMonth.finalIncome,
+        expenses: reporting.selectedMonth.finalExpenses,
+        profit: reporting.selectedMonth.finalProfit,
+        jobs: selectedMonthJobs,
+        from: reporting.selectedMonth.from,
+        to: reporting.selectedMonth.to,
+        unreviewedBankTransactions: reporting.selectedMonth.unreviewedBankRowsExcluded.length,
+        standaloneBankIncome: reporting.selectedMonth.eligibleStandaloneBankIncome.reduce((sum, row) => sum + row.amount, 0),
+        standaloneBankExpenses: reporting.selectedMonth.eligibleStandaloneBankExpenses.reduce((sum, row) => sum + row.amount, 0),
+      },
+      taxYear: { income: reporting.taxYear.finalIncome, expenses: reporting.taxYear.finalExpenses, profit: reporting.taxYear.finalProfit },
+      taxStart: reporting.taxStart,
+      taxEnd: reporting.taxEnd,
       jobCount: jobs.length,
     };
-  }, [bankTransactions, expenses, getStandaloneBankTotals, jobs, selectedMonth]);
+  }, [jobs.length, reporting]);
+
+  const possibleBookkeepingDuplicateBankIds = useMemo(
+    () => new Set(reporting.allTime.possibleDuplicateBankRowsExcluded.map((row) => row.id).filter(Boolean)),
+    [reporting.allTime.possibleDuplicateBankRowsExcluded],
+  );
 
   const taxEstimate = useMemo(() => {
     const businessProfit = totals.taxYear.profit;
@@ -1305,18 +1284,24 @@ export default function HomePage({
 
   const reportDiagnostics = useMemo(() => {
     if (process.env.NODE_ENV === "production") return null;
-    const monthRange = getMonthRange(selectedMonth);
-    const monthBank = bankTransactions.filter((row) => row.transaction_date >= monthRange.from && row.transaction_date <= monthRange.to);
     return {
       selectedMonth,
-      recordsCountedFromJobsIncome: jobs.filter((job) => isInDateRange(job.job_date, monthRange.from, monthRange.to)).length,
-      recordsCountedFromExpenses: expenses.filter((expense) => isInDateRange(expense.expense_date, monthRange.from, monthRange.to)).length,
-      standaloneBankIncomeCounted: monthBank.filter((row) => isStandaloneProfitBankRow(row) && Number(row.amount || 0) > 0).length,
-      standaloneBankExpensesCounted: monthBank.filter((row) => isStandaloneProfitBankRow(row) && Number(row.amount || 0) < 0).length,
-      matchedBankRowsExcluded: monthBank.filter(isMatchedBankRow).length,
-      excludedTransferOwnerPersonalTaxRows: monthBank.filter((row) => !affectsProfit(getBankCategoryType(row))).length,
+      income: {
+        jobRecordsIncluded: reporting.selectedMonth.authoritativeJobIncome,
+        standaloneBankIncomeIncluded: reporting.selectedMonth.eligibleStandaloneBankIncome,
+        matchedIncomingBankRowsExcluded: reporting.selectedMonth.matchedBankRowsExcluded.filter((row) => row.signedAmount > 0),
+        finalIncome: reporting.selectedMonth.finalIncome,
+      },
+      expenses: {
+        expenseRecordsIncluded: reporting.selectedMonth.authoritativeExpenseRecords,
+        standaloneBankExpensesIncluded: reporting.selectedMonth.eligibleStandaloneBankExpenses,
+        matchedOutgoingBankRowsExcluded: reporting.selectedMonth.matchedBankRowsExcluded.filter((row) => row.signedAmount < 0),
+        drawingsPersonalTransfersExcluded: reporting.selectedMonth.nonBusinessBankRowsExcluded,
+        possibleDuplicateBankRowsExcluded: reporting.selectedMonth.possibleDuplicateBankRowsExcluded,
+        finalExpenses: reporting.selectedMonth.finalExpenses,
+      },
     };
-  }, [bankTransactions, expenses, jobs, selectedMonth]);
+  }, [reporting.selectedMonth, selectedMonth]);
 
   useEffect(() => {
     if (reportDiagnostics) console.debug("SmartFobs report diagnostics", reportDiagnostics);
@@ -1342,35 +1327,17 @@ export default function HomePage({
   }, [stockSettings, totals.profit]);
 
   const breakdowns = useMemo(() => {
-    const group = <T,>(rows: T[], label: (row: T) => string, value: (row: T) => number) =>
+    const group = (rows: ReportingMoneyRow[]) =>
       Object.entries(rows.reduce<Record<string, number>>((totals, row) => {
-        const key = label(row) || "Uncategorised";
-        totals[key] = (totals[key] || 0) + value(row);
+        const key = row.category || "Uncategorised";
+        totals[key] = (totals[key] || 0) + row.amount;
         return totals;
       }, {})).sort((a, b) => b[1] - a[1]);
-    const monthJobs = jobs.filter((job) => isDateInMonth(job.job_date, selectedMonth));
-    const monthExpenses = expenses.filter((expense) => isDateInMonth(expense.expense_date, selectedMonth));
-    const { from, to } = getMonthRange(selectedMonth);
-    const monthBankRows = bankTransactions.filter((row) => row.transaction_date >= from && row.transaction_date <= to && isStandaloneProfitBankRow(row));
     return {
-      income: group(
-        [
-          ...monthJobs.map((row) => ({ category: row.job_type || "Other Income", value: Number(row.amount_charged || 0) })),
-          ...monthBankRows.filter((row) => Number(row.amount || 0) > 0).map((row) => ({ category: row.category || "Other Income", value: Number(row.amount || 0) })),
-        ],
-        (row) => row.category,
-        (row) => row.value,
-      ),
-      expenses: group(
-        [
-          ...monthExpenses.map((row) => ({ category: row.category || "Miscellaneous", value: Number(row.amount || 0) })),
-          ...monthBankRows.filter((row) => Number(row.amount || 0) < 0).map((row) => ({ category: row.category || "Miscellaneous", value: Math.abs(Number(row.amount || 0)) })),
-        ],
-        (row) => row.category,
-        (row) => row.value,
-      ),
+      income: group([...reporting.selectedMonth.authoritativeJobIncome, ...reporting.selectedMonth.eligibleStandaloneBankIncome]),
+      expenses: group([...reporting.selectedMonth.authoritativeExpenseRecords, ...reporting.selectedMonth.eligibleStandaloneBankExpenses]),
     };
-  }, [bankTransactions, expenses, jobs, selectedMonth]);
+  }, [reporting.selectedMonth]);
 
   const filteredJobs = jobs.filter((j) =>
     `${j.customer_name} ${j.dealer_name} ${j.vehicle} ${j.registration} ${j.job_type}`
@@ -1441,20 +1408,18 @@ export default function HomePage({
     unreviewedTransactions: bankTransactions.filter((row) => (row.review_status || "needs_review") !== "reviewed").length,
     unmatchedIncome: jobs.filter((job) => !job.notes?.includes("Matched bank transaction")).length,
     unmatchedExpenses: expenses.filter((expense) => !expense.notes?.includes("Matched bank transaction")).length,
-    possibleDuplicates: hiddenDuplicateBankRows.length,
+    possibleDuplicates: hiddenDuplicateBankRows.length + reporting.allTime.possibleDuplicateBankRowsExcluded.length,
     parsingErrors: bankImportPreview?.rejectedRows.length || bankImportResult?.rejectedRows || 0,
     missingDates: [...jobs.filter((job) => !job.job_date), ...expenses.filter((expense) => !expense.expense_date), ...bankTransactions.filter((row) => !row.transaction_date)].length,
     invalidAmounts: [...jobs.filter((job) => !Number(job.amount_charged)), ...expenses.filter((expense) => !Number(expense.amount)), ...bankTransactions.filter((row) => !Number(row.amount))].length,
-  }), [bankImportPreview?.rejectedRows.length, bankImportResult?.rejectedRows, bankTransactions, expenses, hiddenDuplicateBankRows.length, jobs]);
+  }), [bankImportPreview?.rejectedRows.length, bankImportResult?.rejectedRows, bankTransactions, expenses, hiddenDuplicateBankRows.length, jobs, reporting.allTime.possibleDuplicateBankRowsExcluded.length]);
 
   const quarterlySummary = useMemo(() => (
     getTaxYearQuarters(totals.taxStart).map((quarter) => {
       const quarterJobs = jobs.filter((job) => isInDateRange(job.job_date, quarter.from, quarter.to));
       const quarterExpenses = expenses.filter((expense) => isInDateRange(expense.expense_date, quarter.from, quarter.to));
       const quarterBank = bankTransactions.filter((row) => isInDateRange(row.transaction_date, quarter.from, quarter.to));
-      const quarterBankTotals = getStandaloneBankTotals(quarter.from, quarter.to);
-      const income = quarterJobs.reduce((sum, job) => sum + Number(job.amount_charged || 0), 0) + quarterBankTotals.income;
-      const expenseTotal = quarterExpenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0) + quarterBankTotals.expenses;
+      const quarterReport = buildReportingReconciliation({ jobs, expenses, bankTransactions, from: quarter.from, to: quarter.to });
       const uncategorised = quarterBank.filter(isUncategorisedBankRow).length;
       const unreviewed = quarterBank.filter((row) => !isReviewedBankRow(row)).length;
       const invalid = [
@@ -1466,16 +1431,16 @@ export default function HomePage({
       const needsReview = uncategorised > 0 || unreviewed > 0 || invalid > 0;
       return {
         ...quarter,
-        income,
-        expenses: expenseTotal,
-        profit: income - expenseTotal,
+        income: quarterReport.finalIncome,
+        expenses: quarterReport.finalExpenses,
+        profit: quarterReport.finalProfit,
         uncategorised,
         unreviewed,
         invalid,
         status: !hasTransactions ? "No transactions" : needsReview ? "Needs review" : "Review complete",
       };
     })
-  ), [bankTransactions, expenses, getStandaloneBankTotals, jobs, totals.taxStart]);
+  ), [bankTransactions, expenses, jobs, totals.taxStart]);
 
   const needsReviewCount = bankRows.filter((row) => row.category === "Miscellaneous" || row.category === "Other Income" || row.review_status === "needs_review").length;
 
@@ -1703,6 +1668,7 @@ export default function HomePage({
                     {totals.selectedMonth.unreviewedBankTransactions} bank transactions still need review and may change these totals.
                   </p>
                 )}
+                <ReportingAuditSummary report={reporting.selectedMonth} money={money} />
               </div>
             </Panel>
             <ReportPeriod title={`Tax year · ${totals.taxStart} to ${totals.taxEnd}`} totals={totals.taxYear} money={money} />
@@ -2049,12 +2015,18 @@ export default function HomePage({
                     const amount = Number(row.amount || 0);
                     const reviewStatus = row.review_status || (row.category === "Miscellaneous" || row.category === "Other Income" ? "needs_review" : "reviewed");
                     const matched = Boolean(row.matched_job_id || row.matched_income_id || row.matched_expense_id);
+                    const possibleBookkeepingDuplicate = possibleBookkeepingDuplicateBankIds.has(row.id || row.transaction_key || "");
                     return (
                       <button key={row.id || row.transaction_key} type="button" onClick={() => openBankReview(row)} className={`w-full rounded-xl bg-[#252a34] p-3 text-left ${reviewStatus !== "reviewed" ? "ring-1 ring-red-400/50" : ""}`}>
                         <span className="flex justify-between gap-3">
                           <span className="min-w-0">
                             <span className="block truncate font-bold">{row.description}</span>
                             <span className={`block text-xs ${theme.faint}`}>{formatUKDate(row.transaction_date)} · {row.category || "Uncategorised"} · {matched ? "Matched" : "Unmatched"}{row.notes ? " · Notes" : ""}</span>
+                            {possibleBookkeepingDuplicate && (
+                              <span className="mt-1 inline-block rounded-full bg-amber-500/20 px-2 py-1 text-xs font-bold text-amber-100">
+                                Possible bookkeeping duplicate
+                              </span>
+                            )}
                           </span>
                           <span className={`shrink-0 font-black ${amount >= 0 ? theme.accentText : "text-red-300"}`}>{money(amount)}</span>
                         </span>
@@ -2245,6 +2217,11 @@ export default function HomePage({
                 {money(Number(selectedBankTransaction.amount || 0))}
               </p>
               {selectedBankTransaction.bank_reference && <p className={`text-xs ${theme.faint}`}>Reference: {selectedBankTransaction.bank_reference}</p>}
+              {possibleBookkeepingDuplicateBankIds.has(selectedBankTransaction.id || selectedBankTransaction.transaction_key || "") && (
+                <p className="mt-3 rounded-xl bg-amber-500/10 p-3 text-xs font-bold text-amber-100">
+                  Possible bookkeeping duplicate: this bank row closely matches an existing job or expense. It is excluded from reports until you confirm whether it should be matched.
+                </p>
+              )}
             </div>
 
             <Select
@@ -2404,6 +2381,36 @@ function ReportPeriod({ title, totals, money }: { title: string; totals: { incom
         <Kpi title="Profit" value={money(totals.profit)} />
       </div>
     </section>
+  );
+}
+
+function ReportingAuditSummary({ report, money }: { report: ReportingReconciliation; money: (value: number) => string }) {
+  const rows = [
+    ["Jobs income", report.authoritativeJobIncome.length, report.authoritativeJobIncome.reduce((sum, row) => sum + row.amount, 0)],
+    ["Standalone bank income", report.eligibleStandaloneBankIncome.length, report.eligibleStandaloneBankIncome.reduce((sum, row) => sum + row.amount, 0)],
+    ["Expense records", report.authoritativeExpenseRecords.length, report.authoritativeExpenseRecords.reduce((sum, row) => sum + row.amount, 0)],
+    ["Standalone bank expenses", report.eligibleStandaloneBankExpenses.length, report.eligibleStandaloneBankExpenses.reduce((sum, row) => sum + row.amount, 0)],
+    ["Matched bank rows excluded", report.matchedBankRowsExcluded.length, 0],
+    ["Possible bookkeeping duplicates excluded", report.possibleDuplicateBankRowsExcluded.length, 0],
+    ["Non-business rows excluded", report.nonBusinessBankRowsExcluded.length, 0],
+    ["Unreviewed rows excluded", report.unreviewedBankRowsExcluded.length, 0],
+  ] as const;
+
+  return (
+    <details className="rounded-xl bg-[#252a34] p-3 text-sm">
+      <summary className="cursor-pointer font-black">How this total was calculated</summary>
+      <div className="mt-3 space-y-2">
+        {rows.map(([label, count, value]) => (
+          <div key={label} className="flex justify-between gap-3 border-b border-[#3a404d] pb-2 last:border-b-0 last:pb-0">
+            <span className={theme.muted}>{label} ({count})</span>
+            <b>{value ? money(value) : "Excluded"}</b>
+          </div>
+        ))}
+        <p className={`pt-2 text-xs leading-relaxed ${theme.faint}`}>
+          Jobs and expense records are authoritative. Reviewed unmatched bank rows only count when they are business income/expenses and do not closely match an existing job or expense.
+        </p>
+      </div>
+    </details>
   );
 }
 
