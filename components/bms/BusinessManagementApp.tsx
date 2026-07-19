@@ -510,15 +510,55 @@ function BikeStock({ rows, reload }: { rows: BookkeepingBikeStock[]; transaction
 }
 
 function Tax({ summary }: { summary: ReturnType<typeof summarise> }) {
+  const quarters = ["Q1", "Q2", "Q3", "Q4"].map((q) => {
+    const rows = summary.rows.filter((row) => row.mtd_quarter === q || quarterForDate(row.transaction_date) === q);
+    const income = rows.reduce((sum, row) => sum + Number(row.allowable_income || 0), 0);
+    const expenses = rows.reduce((sum, row) => sum + Number(row.allowable_expense || 0), 0);
+    return { q, income, expenses, profit: income - expenses };
+  });
+  const latestDate = summary.rows.map((row) => row.transaction_date).sort().at(-1) || summary.taxYear.start;
+  const taxYearStart = new Date(`${summary.taxYear.start}T00:00:00`);
+  const latest = new Date(`${latestDate}T00:00:00`);
+  const elapsedDays = Math.max(1, Math.floor((latest.getTime() - taxYearStart.getTime()) / 86_400_000) + 1);
+  const projectedProfit = summary.profit > 0 ? (summary.profit / elapsedDays) * 365 : 0;
   return (
-    <Panel title="Tax & MTD" subtitle="Recorded position so far is separate from projected annual position. Estimates only, not final tax advice.">
+    <div className="space-y-5">
+      <Panel title="Tax & MTD" subtitle={`Tax year ${summary.taxYear.label}: ${summary.taxYear.start} to ${summary.taxYear.end}. Estimates only, not final tax advice.`}>
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+          <KpiCard label="Tax-year income" value={formatGBP(summary.income)} accent="green" />
+          <KpiCard label="Tax-year expenses" value={formatGBP(summary.expenses)} accent="rose" />
+          <KpiCard label="Tax-year profit" value={formatGBP(summary.profit)} accent="blue" />
+          <KpiCard label="Projected annual profit" value={formatGBP(projectedProfit)} accent="slate" hint={`Run-rate from ${elapsedDays} recorded days`} />
+        </div>
+      </Panel>
+
+      <Panel title="Recorded tax estimate so far" subtitle="This is based on recorded taxable profit only. It is not the same as cash in the bank.">
       <div className="grid gap-4 md:grid-cols-3">
         <KpiCard label="Income Tax estimate" value={formatGBP(summary.incomeTax)} accent="amber" />
         <KpiCard label="Class 4 NI estimate" value={formatGBP(summary.class4)} accent="amber" />
         <KpiCard label="Suggested tax reserve" value={formatGBP(summary.taxReserve)} accent="green" />
       </div>
-      <p className="mt-4 text-sm text-slate-400">Quarterly MTD updates are reporting updates and are not quarterly tax bills.</p>
-    </Panel>
+      {summary.taxReserve === 0 ? (
+        <p className="mt-4 rounded-2xl border border-white/10 bg-white/[0.04] p-4 text-sm text-slate-300">
+          The tax estimate is £0 because recorded profit so far is below the current £12,570 personal allowance / Class 4 NI lower limit used by the app.
+          This can change as more income, expenses or other taxable income are added.
+        </p>
+      ) : null}
+      </Panel>
+
+      <Panel title="MTD quarterly position" subtitle="Quarterly MTD updates are reporting updates and are not quarterly tax bills.">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+          {[...quarters, { q: "Full year", income: summary.income, expenses: summary.expenses, profit: summary.profit }].map((quarter) => (
+            <div key={quarter.q} className="rounded-2xl bg-white/[0.04] p-4">
+              <p className="font-semibold">{quarter.q}</p>
+              <p className="text-sm text-slate-400">Income {formatGBP(quarter.income)}</p>
+              <p className="text-sm text-slate-400">Expenses {formatGBP(quarter.expenses)}</p>
+              <p className="mt-1 text-lime-200">{formatGBP(quarter.profit)}</p>
+            </div>
+          ))}
+        </div>
+      </Panel>
+    </div>
   );
 }
 
