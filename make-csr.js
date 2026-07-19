@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 const forge = require('node-forge');
 const fs = require('fs');
 

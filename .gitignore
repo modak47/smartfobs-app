@@ -39,3 +39,20 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Private bookkeeping files
+data/imports/
+data/backups/
+*.xlsx
+*.xls
+*.csv
+!templates/
+!templates/DWB-accountant-template.xlsx
+
+# Private keys and environment secrets
+private.key
+*.key
+*.csr
+.env
+.env.*
+!.env.example
