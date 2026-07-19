@@ -23,6 +23,19 @@ const navItems: { key: Section; label: string }[] = [
   { key: "settings", label: "Settings" },
 ];
 
+const mobileNavItems: { key: Section; label: string }[] = [
+  { key: "dashboard", label: "Home" },
+  { key: "transactions", label: "Txns" },
+  { key: "review", label: "Review" },
+  { key: "receipts", label: "Receipts" },
+  { key: "imports", label: "Import" },
+  { key: "tax", label: "Tax" },
+  { key: "reports", label: "Reports" },
+  { key: "stock", label: "Stock" },
+  { key: "mileage", label: "Miles" },
+  { key: "settings", label: "Settings" },
+];
+
 const categories = [
   "Needs Review",
   "SmartFobs Sales",
@@ -224,21 +237,21 @@ export default function BusinessManagementApp({ initialSection = "dashboard" }: 
   return (
     <main className="min-h-screen bg-[#05070b] text-slate-100">
       <div className="fixed inset-0 -z-10 bg-[radial-gradient(circle_at_top_left,_rgba(119,255,0,0.14),_transparent_30%),radial-gradient(circle_at_top_right,_rgba(56,189,248,0.12),_transparent_28%)]" />
-      <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-5 sm:px-6 lg:px-8">
-        <header className="mb-6 flex flex-col gap-4 rounded-[2rem] border border-white/10 bg-white/[0.03] p-4 shadow-2xl shadow-black/30 backdrop-blur md:flex-row md:items-center md:justify-between">
+      <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col px-3 pb-28 pt-3 sm:px-6 sm:py-5 lg:px-8">
+        <header className="sticky top-2 z-30 mb-4 flex flex-col gap-3 rounded-[1.75rem] border border-white/10 bg-[#080c13]/90 p-3 shadow-2xl shadow-black/30 backdrop-blur md:static md:mb-6 md:flex-row md:items-center md:justify-between md:p-4">
           <div className="flex items-center gap-4">
-            <div className="relative h-14 w-14 overflow-hidden rounded-2xl border border-white/10 bg-black">
+            <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-2xl border border-white/10 bg-black sm:h-14 sm:w-14">
               <Image src="/logo.png" alt="SmartFobs logo" fill sizes="56px" className="object-cover" />
             </div>
-            <div>
+            <div className="min-w-0">
               <p className="text-xs uppercase tracking-[0.32em] text-lime-300">DWB Trading</p>
-              <h1 className="text-2xl font-semibold tracking-tight text-white">SmartFobs Bookkeeping</h1>
-              <p className="text-sm text-slate-400">Supabase is live truth. Excel is import/export only.</p>
+              <h1 className="truncate text-xl font-semibold tracking-tight text-white sm:text-2xl">SmartFobs Bookkeeping</h1>
+              <p className="hidden text-sm text-slate-400 sm:block">Supabase is live truth. Excel is import/export only.</p>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <button onClick={loadData} className="btn-secondary">Refresh</button>
-            <a href="/api/bookkeeping/export-workbook" className="btn-primary">Export Accountant Workbook</a>
+          <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
+            <button onClick={loadData} className="btn-secondary mobile-tap">Refresh</button>
+            <a href="/api/bookkeeping/export-workbook" className="btn-primary mobile-tap text-center">Export Workbook</a>
           </div>
         </header>
 
@@ -246,7 +259,7 @@ export default function BusinessManagementApp({ initialSection = "dashboard" }: 
         {error ? <div className="mb-4 rounded-2xl border border-rose-300/20 bg-rose-300/10 p-3 text-sm text-rose-100">{error}</div> : null}
 
         <div className="grid gap-5 lg:grid-cols-[250px_1fr]">
-          <nav className="grid grid-cols-2 gap-2 rounded-[2rem] border border-white/10 bg-white/[0.03] p-3 md:grid-cols-4 lg:sticky lg:top-5 lg:grid-cols-1 lg:self-start">
+          <nav className="hidden rounded-[2rem] border border-white/10 bg-white/[0.03] p-3 lg:sticky lg:top-5 lg:grid lg:grid-cols-1 lg:self-start">
             {navItems.map((item) => (
               <button key={item.key} onClick={() => setSection(item.key)} className={`rounded-2xl px-3 py-3 text-left text-sm transition ${section === item.key ? "bg-white text-black" : "text-slate-300 hover:bg-white/10"}`}>
                 {item.label}
@@ -270,8 +283,29 @@ export default function BusinessManagementApp({ initialSection = "dashboard" }: 
           </section>
         </div>
       </div>
+      <MobileBottomNav section={section} setSection={setSection} />
       {selected ? <TransactionModal row={selected} setRow={setSelected} save={saveTransaction} remove={deleteTransaction} reload={loadData} /> : null}
     </main>
+  );
+}
+
+function MobileBottomNav({ section, setSection }: { section: Section; setSection: (section: Section) => void }) {
+  return (
+    <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-[#080c13]/95 px-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 shadow-2xl shadow-black/60 backdrop-blur lg:hidden">
+      <div className="flex gap-2 overflow-x-auto pb-1 [scrollbar-width:none]">
+        {mobileNavItems.map((item) => (
+          <button
+            key={item.key}
+            onClick={() => setSection(item.key)}
+            className={`mobile-tap min-w-[4.7rem] rounded-2xl px-3 py-2 text-center text-xs font-medium transition ${
+              section === item.key ? "bg-white text-black" : "bg-white/[0.06] text-slate-300"
+            }`}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+    </nav>
   );
 }
 
@@ -306,7 +340,7 @@ function Dashboard({
           <button className="btn-primary" onClick={repairAllowables}>Repair imported totals</button>
         </Panel>
       ) : null}
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
         <button className="text-left" onClick={() => openRows("transactions")}><KpiCard label="Business income" value={formatGBP(summary.income)} accent="green" hint="Click to open transactions" /></button>
         <button className="text-left" onClick={() => openRows("transactions")}><KpiCard label="Allowable expenses" value={formatGBP(summary.expenses)} accent="rose" hint="Click to open transactions" /></button>
         <KpiCard label="Profit recorded so far" value={formatGBP(summary.profit)} accent="blue" />
@@ -317,7 +351,7 @@ function Dashboard({
         <KpiCard label="Motorcycle stock value" value={formatGBP(stockValue)} accent="green" />
       </div>
       <Panel title="Quarterly MTD updates" subtitle="Quarterly MTD updates are reporting updates and are not quarterly tax bills.">
-        <div className="grid gap-3 md:grid-cols-5">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
           {[...quarters, { q: "Full year", income: summary.income, expenses: summary.expenses, profit: summary.profit }].map((q) => (
             <div key={q.q} className="rounded-2xl bg-white/[0.04] p-4">
               <p className="font-semibold">{q.q}</p>
@@ -396,17 +430,22 @@ function Transactions(props: {
   const hasActiveFilters = props.query || Object.entries(props.filters).some(([key, value]) => key !== "sort" && value !== "" && value !== "all" && value !== false);
   return (
     <Panel title="Transactions" subtitle="Live Supabase transactions with filters, bulk edit and click-to-edit.">
-      <div className="grid gap-3 md:grid-cols-4">
-        <input value={props.query} onChange={(e) => props.setQuery(e.target.value)} placeholder="Search" className="input" />
-        <input type="date" value={String(props.filters.dateFrom)} onChange={(e) => props.setFilters({ ...props.filters, dateFrom: e.target.value } as never)} className="input" />
-        <input type="date" value={String(props.filters.dateTo)} onChange={(e) => props.setFilters({ ...props.filters, dateTo: e.target.value } as never)} className="input" />
-        <select value={String(props.filters.category)} onChange={(e) => props.setFilters({ ...props.filters, category: e.target.value } as never)} className="input"><option value="all">All categories</option>{categories.map((c) => <option key={c}>{c}</option>)}</select>
-        <select value={String(props.filters.business)} onChange={(e) => props.setFilters({ ...props.filters, business: e.target.value } as never)} className="input"><option value="all">Business/personal</option>{["Business", "Mixed", "Personal", "Exclude", "Review"].map((c) => <option key={c}>{c}</option>)}</select>
-        <select value={String(props.filters.receipt)} onChange={(e) => props.setFilters({ ...props.filters, receipt: e.target.value } as never)} className="input"><option value="all">Receipt status</option>{["To find", "Not needed", "matched", "unmatched", "review_required"].map((c) => <option key={c}>{c}</option>)}</select>
-        <select value={String(props.filters.quarter)} onChange={(e) => props.setFilters({ ...props.filters, quarter: e.target.value } as never)} className="input"><option value="all">MTD quarter</option>{["Q1", "Q2", "Q3", "Q4"].map((c) => <option key={c}>{c}</option>)}</select>
-        <select value={String(props.filters.sort)} onChange={(e) => props.setFilters({ ...props.filters, sort: e.target.value } as never)} className="input"><option value="date_desc">Newest</option><option value="date_asc">Oldest</option><option value="amount_desc">Highest amount</option><option value="amount_asc">Lowest amount</option></select>
+      <div className="space-y-3">
+        <input value={props.query} onChange={(e) => props.setQuery(e.target.value)} placeholder="Search transactions..." className="input" />
+        <details className="rounded-2xl border border-white/10 bg-black/20 p-3 md:open:bg-transparent" open={hasActiveFilters ? true : undefined}>
+          <summary className="cursor-pointer select-none text-sm font-semibold text-slate-200">Filters & sorting</summary>
+          <div className="mt-3 grid gap-3 md:grid-cols-4">
+            <input type="date" value={String(props.filters.dateFrom)} onChange={(e) => props.setFilters({ ...props.filters, dateFrom: e.target.value } as never)} className="input" />
+            <input type="date" value={String(props.filters.dateTo)} onChange={(e) => props.setFilters({ ...props.filters, dateTo: e.target.value } as never)} className="input" />
+            <select value={String(props.filters.category)} onChange={(e) => props.setFilters({ ...props.filters, category: e.target.value } as never)} className="input"><option value="all">All categories</option>{categories.map((c) => <option key={c}>{c}</option>)}</select>
+            <select value={String(props.filters.business)} onChange={(e) => props.setFilters({ ...props.filters, business: e.target.value } as never)} className="input"><option value="all">Business/personal</option>{["Business", "Mixed", "Personal", "Exclude", "Review"].map((c) => <option key={c}>{c}</option>)}</select>
+            <select value={String(props.filters.receipt)} onChange={(e) => props.setFilters({ ...props.filters, receipt: e.target.value } as never)} className="input"><option value="all">Receipt status</option>{["To find", "Not needed", "matched", "unmatched", "review_required"].map((c) => <option key={c}>{c}</option>)}</select>
+            <select value={String(props.filters.quarter)} onChange={(e) => props.setFilters({ ...props.filters, quarter: e.target.value } as never)} className="input"><option value="all">MTD quarter</option>{["Q1", "Q2", "Q3", "Q4"].map((c) => <option key={c}>{c}</option>)}</select>
+            <select value={String(props.filters.sort)} onChange={(e) => props.setFilters({ ...props.filters, sort: e.target.value } as never)} className="input"><option value="date_desc">Newest</option><option value="date_asc">Oldest</option><option value="amount_desc">Highest amount</option><option value="amount_asc">Lowest amount</option></select>
+          </div>
+        </details>
       </div>
-      <div className="mt-4 flex flex-wrap gap-2">
+      <div className="mt-4 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
         <button className="btn-primary" onClick={() => props.setSelected(newTransaction())}>Add Transaction</button>
         <button className="btn-secondary" onClick={() => { props.setQuery(""); props.setFilters(emptyFilters()); }}>Clear filters</button>
         <BulkButton label="Bulk Category" options={categories} onApply={(v) => props.bulkEdit("category", v)} />
@@ -513,9 +552,15 @@ function TransactionModal({ row, setRow, save, remove, reload }: { row: Bookkeep
     setRow(null);
   }
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 p-4 backdrop-blur">
-      <div className="mx-auto max-h-[95vh] max-w-2xl overflow-auto rounded-[2rem] border border-white/10 bg-[#0b1018] p-5">
-        <div className="flex justify-between"><h2 className="text-xl font-semibold">Edit Transaction</h2><button onClick={() => setRow(null)}>✕</button></div>
+    <div className="fixed inset-0 z-50 flex items-end bg-black/70 p-0 backdrop-blur sm:items-center sm:p-4">
+      <div className="mobile-sheet mx-auto max-h-[92dvh] w-full max-w-2xl overflow-auto rounded-t-[2rem] border border-white/10 bg-[#0b1018] p-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] shadow-2xl shadow-black/60 sm:rounded-[2rem] sm:p-5">
+        <div className="sticky top-0 z-10 -mx-4 -mt-4 mb-4 flex items-center justify-between border-b border-white/10 bg-[#0b1018]/95 px-4 py-4 backdrop-blur sm:-mx-5 sm:-mt-5 sm:px-5">
+          <div>
+            <p className="text-xs uppercase tracking-[0.2em] text-lime-300">Transaction</p>
+            <h2 className="text-lg font-semibold sm:text-xl">{row.id ? "Edit Transaction" : "Add Transaction"}</h2>
+          </div>
+          <button className="mobile-tap rounded-full bg-white/10 px-4 py-2 text-lg" onClick={() => setRow(null)}>✕</button>
+        </div>
         <div className="mt-4 grid gap-3 md:grid-cols-2">
           <input className="input" type="date" value={row.transaction_date} onChange={(e) => update("transaction_date", e.target.value)} />
           <input className="input" type="number" step="0.01" value={row.original_amount} onChange={(e) => update("original_amount", Number(e.target.value))} />
@@ -533,7 +578,11 @@ function TransactionModal({ row, setRow, save, remove, reload }: { row: Bookkeep
           <Select value={row.accountant_review || ""} options={["Not reviewed", "Reviewed", "Query for accountant", "Adjusted"]} onChange={(v) => update("accountant_review", v)} />
           <textarea className="input md:col-span-2" value={row.notes || ""} onChange={(e) => update("notes", e.target.value)} />
         </div>
-        <div className="mt-5 flex flex-wrap gap-3"><button className="btn-primary" onClick={() => save(row)}>Save Transaction</button><FileButton label="Upload Receipt" accept="image/*,.pdf" onFile={uploadReceipt} /><button className="btn-secondary" onClick={() => remove(row.id)}>Delete</button></div>
+        <div className="sticky bottom-0 -mx-4 mt-5 grid grid-cols-1 gap-2 border-t border-white/10 bg-[#0b1018]/95 px-4 py-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] backdrop-blur sm:-mx-5 sm:grid-cols-3 sm:px-5">
+          <button className="btn-primary mobile-tap" onClick={() => save(row)}>Save Transaction</button>
+          {row.id ? <FileButton label="Upload Receipt" accept="image/*,.pdf" onFile={uploadReceipt} /> : null}
+          {row.id ? <button className="btn-secondary mobile-tap" onClick={() => remove(row.id)}>Delete</button> : null}
+        </div>
       </div>
     </div>
   );
@@ -557,18 +606,18 @@ function CrudPanel({ title, table, rows, empty, fields, reload }: { title: strin
   }
   return (
     <Panel title={title}><button className="btn-primary mb-4" onClick={() => setEditing(empty)}>Add {title}</button>
-      {editing ? <div className="mb-4 grid gap-3 md:grid-cols-2 rounded-2xl bg-white/[0.04] p-4">{fields.map((f) => <input key={f} className="input" placeholder={f} value={String(editing[f] ?? "")} onChange={(e) => setEditing({ ...editing, [f]: e.target.value })} />)}<button className="btn-primary" onClick={save}>Save</button></div> : null}
-      <div className="grid gap-3">{rows.map((r) => <div key={String(r.id)} className="rounded-2xl bg-white/[0.04] p-4 flex justify-between"><button className="text-left" onClick={() => setEditing(r)}>{fields.slice(0, 3).map((f) => String(r[f] ?? "")).filter(Boolean).join(" · ") || "Record"}</button><button onClick={() => remove(String(r.id))}>Delete</button></div>)}</div>
+      {editing ? <div className="mb-4 grid gap-3 rounded-2xl bg-white/[0.04] p-4 md:grid-cols-2">{fields.map((f) => <input key={f} className="input" placeholder={f} value={String(editing[f] ?? "")} onChange={(e) => setEditing({ ...editing, [f]: e.target.value })} />)}<button className="btn-primary md:col-span-2" onClick={save}>Save</button></div> : null}
+      <div className="grid gap-3">{rows.map((r) => <div key={String(r.id)} className="grid gap-3 rounded-2xl bg-white/[0.04] p-4 sm:flex sm:items-center sm:justify-between"><button className="min-w-0 text-left" onClick={() => setEditing(r)}>{fields.slice(0, 3).map((f) => String(r[f] ?? "")).filter(Boolean).join(" · ") || "Record"}</button><button className="btn-secondary w-full sm:w-auto" onClick={() => remove(String(r.id))}>Delete</button></div>)}</div>
     </Panel>
   );
 }
 
 function TransactionList({ rows, selectedIds, setSelectedIds, onClick }: { rows: BookkeepingTransaction[]; selectedIds?: Set<string>; setSelectedIds?: (v: Set<string>) => void; onClick: (r: BookkeepingTransaction) => void }) {
-  return <div className="grid gap-3">{rows.map((row) => <div key={row.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 hover:bg-white/[0.06]">
+  return <div className="grid gap-3">{rows.map((row) => <div key={row.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 hover:bg-white/[0.06] sm:p-4">
     <div className="flex items-start gap-3">
-      {selectedIds && setSelectedIds ? <input type="checkbox" checked={selectedIds.has(row.id)} onChange={(e) => { const next = new Set(selectedIds); if (e.target.checked) next.add(row.id); else next.delete(row.id); setSelectedIds(next); }} /> : null}
+      {selectedIds && setSelectedIds ? <input className="mt-1 h-5 w-5 shrink-0 accent-lime-300" type="checkbox" checked={selectedIds.has(row.id)} onChange={(e) => { const next = new Set(selectedIds); if (e.target.checked) next.add(row.id); else next.delete(row.id); setSelectedIds(next); }} /> : null}
       <button className="min-w-0 flex-1 text-left" onClick={() => onClick(row)}>
-        <div className="flex justify-between gap-3"><p className="truncate font-semibold">{row.description}</p><p className={Number(row.original_amount) >= 0 ? "text-lime-300" : "text-rose-300"}>{formatGBP(row.original_amount)}</p></div>
+        <div className="grid gap-1 sm:flex sm:justify-between sm:gap-3"><p className="min-w-0 break-words font-semibold leading-snug">{row.description}</p><p className={`font-semibold sm:shrink-0 ${Number(row.original_amount) >= 0 ? "text-lime-300" : "text-rose-300"}`}>{formatGBP(row.original_amount)}</p></div>
         <p className="mt-1 text-xs text-slate-400">{row.transaction_date} · {row.category} · {row.receipt_status}</p>
         <div className="mt-2 flex flex-wrap gap-2">{badges(row).map((b) => <span key={b} className="rounded-full bg-white/10 px-2 py-1 text-xs">{b}</span>)}</div>
       </button>

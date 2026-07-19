@@ -22,13 +22,13 @@ export function KpiCard({
   };
 
   return (
-    <div className={`rounded-3xl bg-gradient-to-br ${accents[accent]} p-px shadow-2xl shadow-black/20 ring-1`}>
-      <div className="h-full rounded-3xl bg-[#0b1018]/90 p-5">
+    <div className={`h-full rounded-3xl bg-gradient-to-br ${accents[accent]} p-px shadow-2xl shadow-black/20 ring-1`}>
+      <div className="h-full rounded-3xl bg-[#0b1018]/90 p-4 sm:p-5">
         <div className="flex items-start justify-between gap-4">
-          <p className="text-sm text-slate-400">{label}</p>
+          <p className="text-xs leading-snug text-slate-400 sm:text-sm">{label}</p>
           {icon ? <div className="text-slate-400">{icon}</div> : null}
         </div>
-        <p className="mt-3 text-2xl font-semibold tracking-tight text-white">{value}</p>
+        <p className="mt-3 break-words text-xl font-semibold tracking-tight text-white sm:text-2xl">{value}</p>
         {hint ? <p className="mt-2 text-xs text-slate-500">{hint}</p> : null}
       </div>
     </div>
