@@ -26,6 +26,32 @@ const accountantCostOfSalesOverrides: Record<string, Partial<Record<BusinessLine
   Q1: { "Bike Sales": 2750 },
 };
 
+const hmrcMtdPosition = {
+  calculationDate: "31 July 2026",
+  currentPeriod: "6 April 2026 to 5 July 2026",
+  forecastPeriod: "6 April 2026 to 5 April 2027 forecast",
+  currentTax: 1939.6,
+  forecastTax: 7779.46,
+  calculation: {
+    income: 10594,
+    allowances: 3134,
+    taxableIncome: 7460,
+    selfAssessmentTax: 1939.6,
+  },
+  forecast: {
+    income: 42491,
+    allowances: 12570,
+    taxableIncome: 29921,
+    selfAssessmentTax: 7779.46,
+  },
+  submissions: [
+    { due: "7 August 2026", period: "6 Apr 2026 to 5 Jul 2026", submitted: true },
+    { due: "7 November 2026", period: "6 Apr 2026 to 5 Oct 2026", submitted: false },
+    { due: "7 February 2027", period: "6 Apr 2026 to 5 Jan 2027", submitted: false },
+  ],
+  incomeSources: ["SMARTFOBS", "Motorbike sales", "MR D BYRNE"],
+};
+
 const navItems: { key: Section; label: string }[] = [
   { key: "dashboard", label: "Dashboard" },
   { key: "transactions", label: "Transactions" },
@@ -552,7 +578,7 @@ function Tax({ summary }: { summary: ReturnType<typeof summarise> }) {
         </p>
       </Panel>
 
-      <Panel title="Recorded tax estimate so far" subtitle="This is based on recorded taxable profit only. It is not the same as cash in the bank.">
+      <Panel title="Draft app-only tax estimate" subtitle="Not the submitted HMRC figure. Use the HMRC MTD position below for the accountant-submitted tax estimate.">
       <div className="grid gap-4 md:grid-cols-3">
         <KpiCard label="Income Tax estimate" value={formatGBP(summary.incomeTax)} accent="amber" />
         <KpiCard label="Class 4 NI estimate" value={formatGBP(summary.class4)} accent="amber" />
@@ -564,6 +590,49 @@ function Tax({ summary }: { summary: ReturnType<typeof summarise> }) {
           This can change as more income, expenses or other taxable income are added.
         </p>
       ) : null}
+      </Panel>
+
+      <Panel title="HMRC MTD position submitted" subtitle="Mirrors the accountant/HMRC figures you shared, so the app can be checked against the submitted quarterly update.">
+        <div className="grid gap-4 md:grid-cols-3">
+          <KpiCard label="Calculation date" value={hmrcMtdPosition.calculationDate} accent="slate" />
+          <KpiCard label={hmrcMtdPosition.currentPeriod} value={formatGBP(hmrcMtdPosition.currentTax)} accent="amber" />
+          <KpiCard label={hmrcMtdPosition.forecastPeriod} value={formatGBP(hmrcMtdPosition.forecastTax)} accent="green" />
+        </div>
+        <div className="mt-5 grid gap-4 lg:grid-cols-2">
+          <HmrcCalculationCard title="Calculation" data={hmrcMtdPosition.calculation} taxLabel="Self Assessment tax amount" note="This is a year to date estimate based on figures already received." />
+          <HmrcCalculationCard title="Forecast" data={hmrcMtdPosition.forecast} taxLabel="Forecast Self Assessment tax amount" note="This is an estimate of the tax bill for the whole year to 5 April 2027." />
+        </div>
+      </Panel>
+
+      <Panel title="MTD submissions" subtitle="Completed and upcoming submissions for each HMRC income source.">
+        <div className="grid gap-4">
+          {hmrcMtdPosition.submissions.map((submission) => (
+            <div key={submission.due} className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+              <h3 className="text-lg font-semibold">Due {submission.due}</h3>
+              <p className="mt-1 text-sm font-semibold text-slate-300">The update period from {submission.period}</p>
+              <div className="mt-3 overflow-x-auto">
+                <table className="w-full min-w-[34rem] text-left text-sm">
+                  <thead className="text-xs uppercase tracking-wide text-slate-400">
+                    <tr>
+                      <th className="py-2 pr-4">Submission</th>
+                      <th className="py-2 pr-4">Income source</th>
+                      <th className="py-2 pr-4">Date submitted</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {hmrcMtdPosition.incomeSources.map((source) => (
+                      <tr key={source} className="border-t border-white/10">
+                        <td className="py-2 pr-4">Quarterly update</td>
+                        <td className="py-2 pr-4">{source}</td>
+                        <td className="py-2 pr-4">{submission.submitted ? hmrcMtdPosition.calculationDate : "Not received"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+        </div>
       </Panel>
 
       <Panel title="MTD quarterly position" subtitle="Quarterly MTD updates are reporting updates and are not quarterly tax bills.">
@@ -579,6 +648,40 @@ function Tax({ summary }: { summary: ReturnType<typeof summarise> }) {
           ))}
         </div>
       </Panel>
+    </div>
+  );
+}
+
+function HmrcCalculationCard({
+  title,
+  data,
+  taxLabel,
+  note,
+}: {
+  title: string;
+  data: { income: number; allowances: number; taxableIncome: number; selfAssessmentTax: number };
+  taxLabel: string;
+  note: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+      <h3 className="text-lg font-semibold">{title}</h3>
+      <div className="mt-4 divide-y divide-white/10 text-sm">
+        <HmrcAmountRow label="Income" value={data.income} />
+        <HmrcAmountRow label="Allowances and deductions" value={data.allowances} />
+        <HmrcAmountRow label="Total income on which tax is due" value={data.taxableIncome} strong />
+        <HmrcAmountRow label={taxLabel} value={data.selfAssessmentTax} strong />
+      </div>
+      <p className="mt-4 border-l-4 border-white/20 pl-4 text-sm text-slate-300">{note}</p>
+    </div>
+  );
+}
+
+function HmrcAmountRow({ label, value, strong }: { label: string; value: number; strong?: boolean }) {
+  return (
+    <div className={`flex justify-between gap-4 py-3 ${strong ? "font-semibold text-white" : "text-slate-300"}`}>
+      <span>{label}</span>
+      <span className="shrink-0">{formatGBP(value)}</span>
     </div>
   );
 }
