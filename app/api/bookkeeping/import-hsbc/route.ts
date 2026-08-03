@@ -33,6 +33,58 @@ function find(headers: string[], names: string[]) {
   return headers.find((h) => wanted.includes(normaliseHeader(h))) || "";
 }
 
+function hsbcDateKey(value: unknown) {
+  const parsed = dateKey(value);
+  if (parsed) return parsed;
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})$/);
+  if (!match) return "";
+  const months: Record<string, string> = {
+    jan: "01",
+    january: "01",
+    feb: "02",
+    february: "02",
+    mar: "03",
+    march: "03",
+    apr: "04",
+    april: "04",
+    may: "05",
+    jun: "06",
+    june: "06",
+    jul: "07",
+    july: "07",
+    aug: "08",
+    august: "08",
+    sep: "09",
+    sept: "09",
+    september: "09",
+    oct: "10",
+    october: "10",
+    nov: "11",
+    november: "11",
+    dec: "12",
+    december: "12",
+  };
+  const month = months[match[2].toLowerCase()];
+  return month ? `${match[3]}-${month}-${match[1].padStart(2, "0")}` : "";
+}
+
+function naturalTransactionKey(input: {
+  transaction_date: string;
+  original_amount: number;
+  description: string;
+  bank_type?: string | null;
+  bank_balance?: number | null;
+}) {
+  return [
+    input.transaction_date,
+    Number(input.original_amount || 0).toFixed(2),
+    String(input.description || "").trim().toLowerCase().replace(/\s+/g, " "),
+    String(input.bank_type || "").trim().toLowerCase().replace(/\s+/g, " "),
+    input.bank_balance === null || input.bank_balance === undefined ? "" : Number(input.bank_balance).toFixed(2),
+  ].join("|");
+}
+
 export async function POST(request: Request) {
   const startedAt = new Date().toISOString();
   const form = await request.formData();
@@ -66,7 +118,7 @@ export async function POST(request: Request) {
     const rowNumber = index + 2;
     const values = splitCsvLine(line);
     const raw = Object.fromEntries(headers.map((header, i) => [header, values[i] ?? ""]));
-    const transactionDate = dateKey(raw[dateCol]);
+    const transactionDate = hsbcDateKey(raw[dateCol]);
     const description = String(raw[descriptionCol] || "").trim();
     const amountText = String(raw[amountCol] || "").trim();
     if (!/^-?[£Ł]?\s?\d[\d,]*(\.\d{1,2})?$/.test(amountText)) {
@@ -109,10 +161,29 @@ export async function POST(request: Request) {
   }
 
   const { data: existing } = rows.length
-    ? await supabase.from("bookkeeping_transactions").select("transaction_hash").in("transaction_hash", rows.map((r) => r.transaction_hash))
+    ? await supabase
+        .from("bookkeeping_transactions")
+        .select("transaction_hash, transaction_date, original_amount, description, bank_type, bank_balance")
+        .gte("transaction_date", rows.map((r) => r.transaction_date).sort()[0])
+        .lte("transaction_date", rows.map((r) => r.transaction_date).sort().at(-1) || rows.map((r) => r.transaction_date).sort()[0])
     : { data: [] };
-  const duplicateHashes = new Set((existing || []).map((r) => r.transaction_hash));
-  const newRows = rows.filter((r) => !duplicateHashes.has(r.transaction_hash));
+  const duplicateHashes = new Set((existing || []).map((r) => r.transaction_hash).filter(Boolean));
+  const duplicateNaturalKeys = new Set((existing || []).map((r) => naturalTransactionKey({
+    transaction_date: r.transaction_date,
+    original_amount: Number(r.original_amount || 0),
+    description: r.description || "",
+    bank_type: r.bank_type,
+    bank_balance: r.bank_balance,
+  })));
+  const seenImportKeys = new Set<string>();
+  const duplicateRows = rows.filter((r) => {
+    const naturalKey = naturalTransactionKey(r);
+    const duplicate = duplicateHashes.has(r.transaction_hash) || duplicateNaturalKeys.has(naturalKey) || seenImportKeys.has(naturalKey);
+    seenImportKeys.add(naturalKey);
+    return duplicate;
+  });
+  const duplicateRowNumbers = new Set(duplicateRows.map((r) => r.source_row_number));
+  const newRows = rows.filter((r) => !duplicateRowNumbers.has(r.source_row_number));
 
   if (mode === "preview") {
     return NextResponse.json({
@@ -123,7 +194,7 @@ export async function POST(request: Request) {
       totalMoneyOut: rows.filter((r) => r.original_amount < 0).reduce((s, r) => s + Math.abs(r.original_amount), 0),
       netMovement: rows.reduce((s, r) => s + r.original_amount, 0),
       totalRows: rows.length,
-      duplicates: duplicateHashes.size,
+      duplicates: duplicateRows.length,
       errors,
       firstRows: rows.slice(0, 10),
     });
@@ -134,7 +205,7 @@ export async function POST(request: Request) {
     filename: safeFilename(file.name),
     total_rows: rows.length,
     imported_rows: 0,
-    duplicate_rows: duplicateHashes.size,
+    duplicate_rows: duplicateRows.length,
     failed_rows: errors.length,
     error_details: errors,
     started_at: startedAt,
@@ -153,5 +224,5 @@ export async function POST(request: Request) {
       completed_at: new Date().toISOString(),
     }).eq("id", importRow.id);
   }
-  return NextResponse.json({ imported, duplicates: duplicateHashes.size, failed: errors.length, total: rows.length, errors });
+  return NextResponse.json({ imported, duplicates: duplicateRows.length, failed: errors.length, total: rows.length, errors });
 }
