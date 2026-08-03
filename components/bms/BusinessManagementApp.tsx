@@ -972,21 +972,51 @@ function TransactionModal({ row, setRow, save, remove, reload }: { row: Bookkeep
           <button className="mobile-tap rounded-full bg-white/10 px-4 py-2 text-lg" onClick={() => setRow(null)}>✕</button>
         </div>
         <div className="mt-4 grid gap-3 md:grid-cols-2">
-          <input className="input" type="date" value={row.transaction_date} onChange={(e) => update("transaction_date", e.target.value)} />
-          <input className="input" type="number" step="0.01" value={row.original_amount} onChange={(e) => update("original_amount", Number(e.target.value))} />
-          <input className="input md:col-span-2" value={row.description} onChange={(e) => update("description", e.target.value)} />
-          <Select value={row.direction} options={["Income", "Expense", "Transfer"]} onChange={(v) => update("direction", v)} />
-          <input className="input" value={row.payment_method || ""} onChange={(e) => update("payment_method", e.target.value)} />
-          <Select value={row.category || ""} options={categories} onChange={(v) => update("category", v)} />
-          <input className="input" value={row.subcategory || ""} onChange={(e) => update("subcategory", e.target.value)} />
-          <Select value={row.business_status || ""} options={["Business", "Mixed", "Personal", "Exclude", "Review"]} onChange={(v) => update("business_status", v)} />
-          <input className="input" type="number" value={normaliseBusinessUsePercent(row.business_use_percent)} onChange={(e) => update("business_use_percent", Number(e.target.value))} />
-          <Select value={row.allowable_status || ""} options={["Yes", "No", "Stock", "Review"]} onChange={(v) => update("allowable_status", v)} />
-          <input className="input" value={row.vat_treatment || ""} onChange={(e) => update("vat_treatment", e.target.value)} />
-          <Select value={row.receipt_status || ""} options={["To find", "Not needed", "matched", "unmatched", "review_required"]} onChange={(v) => update("receipt_status", v)} />
-          <input className="input" value={row.bike_job_reference || ""} onChange={(e) => update("bike_job_reference", e.target.value)} />
-          <Select value={row.accountant_review || ""} options={["Not reviewed", "Reviewed", "Query for accountant", "Adjusted"]} onChange={(v) => update("accountant_review", v)} />
-          <textarea className="input md:col-span-2" value={row.notes || ""} onChange={(e) => update("notes", e.target.value)} />
+          <FieldLabel label="Transaction date">
+            <input className="input" type="date" value={row.transaction_date} onChange={(e) => update("transaction_date", e.target.value)} />
+          </FieldLabel>
+          <FieldLabel label="Amount">
+            <input className="input" type="number" step="0.01" value={row.original_amount} onChange={(e) => update("original_amount", Number(e.target.value))} />
+          </FieldLabel>
+          <FieldLabel label="Description" className="md:col-span-2">
+            <input className="input" value={row.description} onChange={(e) => update("description", e.target.value)} />
+          </FieldLabel>
+          <FieldLabel label="Direction">
+            <Select value={row.direction} options={["Income", "Expense", "Transfer"]} onChange={(v) => update("direction", v)} />
+          </FieldLabel>
+          <FieldLabel label="Payment method">
+            <input className="input" value={row.payment_method || ""} onChange={(e) => update("payment_method", e.target.value)} />
+          </FieldLabel>
+          <FieldLabel label="Category">
+            <Select value={row.category || ""} options={categories} onChange={(v) => update("category", v)} />
+          </FieldLabel>
+          <FieldLabel label="Subcategory / detail">
+            <input className="input" value={row.subcategory || ""} onChange={(e) => update("subcategory", e.target.value)} />
+          </FieldLabel>
+          <FieldLabel label="Business status">
+            <Select value={row.business_status || ""} options={["Business", "Mixed", "Personal", "Exclude", "Review"]} onChange={(v) => update("business_status", v)} />
+          </FieldLabel>
+          <FieldLabel label="Business use %">
+            <input className="input" type="number" value={normaliseBusinessUsePercent(row.business_use_percent)} onChange={(e) => update("business_use_percent", Number(e.target.value))} />
+          </FieldLabel>
+          <FieldLabel label="Allowable / stock status">
+            <Select value={row.allowable_status || ""} options={["Yes", "No", "Stock", "Review"]} onChange={(v) => update("allowable_status", v)} />
+          </FieldLabel>
+          <FieldLabel label="VAT treatment">
+            <input className="input" value={row.vat_treatment || ""} onChange={(e) => update("vat_treatment", e.target.value)} />
+          </FieldLabel>
+          <FieldLabel label="Receipt status">
+            <Select value={row.receipt_status || ""} options={["To find", "Not needed", "matched", "unmatched", "review_required"]} onChange={(v) => update("receipt_status", v)} />
+          </FieldLabel>
+          <FieldLabel label="Bike / job reference">
+            <input className="input" value={row.bike_job_reference || ""} onChange={(e) => update("bike_job_reference", e.target.value)} />
+          </FieldLabel>
+          <FieldLabel label="Accountant review">
+            <Select value={row.accountant_review || ""} options={["Not reviewed", "Reviewed", "Query for accountant", "Adjusted"]} onChange={(v) => update("accountant_review", v)} />
+          </FieldLabel>
+          <FieldLabel label="Notes" className="md:col-span-2">
+            <textarea className="input min-h-24" value={row.notes || ""} onChange={(e) => update("notes", e.target.value)} />
+          </FieldLabel>
         </div>
         <div className="sticky bottom-0 -mx-4 mt-5 grid grid-cols-1 gap-2 border-t border-white/10 bg-[#0b1018]/95 px-4 py-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] backdrop-blur sm:-mx-5 sm:grid-cols-3 sm:px-5">
           <button className="btn-primary mobile-tap" onClick={() => save(row)}>Save Transaction</button>
@@ -1016,7 +1046,11 @@ function CrudPanel({ title, table, rows, empty, fields, reload }: { title: strin
   }
   return (
     <Panel title={title}><button className="btn-primary mb-4" onClick={() => setEditing(empty)}>Add {title}</button>
-      {editing ? <div className="mb-4 grid gap-3 rounded-2xl bg-white/[0.04] p-4 md:grid-cols-2">{fields.map((f) => <input key={f} className="input" placeholder={f} value={String(editing[f] ?? "")} onChange={(e) => setEditing({ ...editing, [f]: e.target.value })} />)}<button className="btn-primary md:col-span-2" onClick={save}>Save</button></div> : null}
+      {editing ? <div className="mb-4 grid gap-3 rounded-2xl bg-white/[0.04] p-4 md:grid-cols-2">{fields.map((f) => (
+        <FieldLabel key={f} label={humanizeField(f)}>
+          <input className="input" placeholder={humanizeField(f)} value={String(editing[f] ?? "")} onChange={(e) => setEditing({ ...editing, [f]: e.target.value })} />
+        </FieldLabel>
+      ))}<button className="btn-primary md:col-span-2" onClick={save}>Save</button></div> : null}
       <div className="grid gap-3">{rows.map((r) => <div key={String(r.id)} className="grid gap-3 rounded-2xl bg-white/[0.04] p-4 sm:flex sm:items-center sm:justify-between"><button className="min-w-0 text-left" onClick={() => setEditing(r)}>{fields.slice(0, 3).map((f) => String(r[f] ?? "")).filter(Boolean).join(" · ") || "Record"}</button><button className="btn-secondary w-full sm:w-auto" onClick={() => remove(String(r.id))}>Delete</button></div>)}</div>
     </Panel>
   );
@@ -1025,7 +1059,7 @@ function CrudPanel({ title, table, rows, empty, fields, reload }: { title: strin
 function TransactionList({ rows, selectedIds, setSelectedIds, onClick }: { rows: BookkeepingTransaction[]; selectedIds?: Set<string>; setSelectedIds?: (v: Set<string>) => void; onClick: (r: BookkeepingTransaction) => void }) {
   return <div className="grid gap-3">{rows.map((row) => <div key={row.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 hover:bg-white/[0.06] sm:p-4">
     <div className="flex items-start gap-3">
-      {selectedIds && setSelectedIds ? <input className="mt-1 h-5 w-5 shrink-0 accent-lime-300" type="checkbox" checked={selectedIds.has(row.id)} onChange={(e) => { const next = new Set(selectedIds); if (e.target.checked) next.add(row.id); else next.delete(row.id); setSelectedIds(next); }} /> : null}
+      {selectedIds && setSelectedIds ? <input aria-label={`Select transaction ${row.description}`} title="Select this transaction for bulk editing" className="mt-1 h-5 w-5 shrink-0 accent-lime-300" type="checkbox" checked={selectedIds.has(row.id)} onChange={(e) => { const next = new Set(selectedIds); if (e.target.checked) next.add(row.id); else next.delete(row.id); setSelectedIds(next); }} /> : null}
       <button className="min-w-0 flex-1 text-left" onClick={() => onClick(row)}>
         <div className="grid gap-1 sm:flex sm:justify-between sm:gap-3"><p className="min-w-0 break-words font-semibold leading-snug">{row.description}</p><p className={`font-semibold sm:shrink-0 ${Number(row.original_amount) >= 0 ? "text-lime-300" : "text-rose-300"}`}>{formatGBP(row.original_amount)}</p></div>
         <p className="mt-1 text-xs text-slate-400">{row.transaction_date} · {row.category} · {row.receipt_status}</p>
@@ -1137,6 +1171,23 @@ async function withSignedReceiptUrls(rows: BookkeepingReceipt[]) {
 
 function FileButton({ label, accept, busy, onFile }: { label: string; accept: string; busy?: boolean; onFile: (file: File) => void }) {
   return <label className="btn-primary inline-flex cursor-pointer"><input type="file" accept={accept} className="hidden" disabled={busy} onChange={(e) => { const file = e.target.files?.[0]; if (file) onFile(file); e.currentTarget.value = ""; }} />{busy ? "Working..." : label}</label>;
+}
+
+function FieldLabel({ label, className = "", children }: { label: string; className?: string; children: React.ReactNode }) {
+  return (
+    <label className={`grid gap-1.5 ${className}`}>
+      <span className="px-1 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function humanizeField(field: string) {
+  return field
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+    .replace("Vat", "VAT")
+    .replace("Id", "ID");
 }
 
 function BulkButton({ label, options, onApply }: { label: string; options: string[]; onApply: (v: string) => void }) {
