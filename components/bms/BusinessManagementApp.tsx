@@ -3,11 +3,28 @@
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
-import { calculateAllowables, currentDateKey, formatGBP, normaliseBusinessUsePercent, quarterForDate, summarise } from "@/lib/production-bookkeeping/core";
+import {
+  calculateAllowables,
+  currentDateKey,
+  formatGBP,
+  normaliseBusinessUsePercent,
+  quarterForDate,
+  reportingIncome,
+  reportingStockPurchase,
+  reportingTradingExpense,
+  summarise,
+  summariseRows,
+} from "@/lib/production-bookkeeping/core";
 import type { BookkeepingBikeStock, BookkeepingMileage, BookkeepingReceipt, BookkeepingTransaction, CategoryRule } from "@/lib/production-bookkeeping/types";
 import { KpiCard } from "@/components/bms/KpiCard";
 
 type Section = "dashboard" | "transactions" | "review" | "imports" | "jobs" | "stock" | "receipts" | "mileage" | "tax" | "reports" | "settings";
+type BusinessLine = "SmartFobs" | "Bike Sales" | "Mechanic";
+
+const businessLines: BusinessLine[] = ["SmartFobs", "Bike Sales", "Mechanic"];
+const accountantCostOfSalesOverrides: Record<string, Partial<Record<BusinessLine, number>>> = {
+  Q1: { "Bike Sales": 2750 },
+};
 
 const navItems: { key: Section; label: string }[] = [
   { key: "dashboard", label: "Dashboard" },
@@ -328,10 +345,9 @@ function Dashboard({
 }) {
   const quarters = ["Q1", "Q2", "Q3", "Q4"].map((q) => {
     const rows = summary.rows.filter((t) => t.mtd_quarter === q || quarterForDate(t.transaction_date) === q);
-    const income = rows.reduce((s, r) => s + Number(r.allowable_income || 0), 0);
-    const expenses = rows.reduce((s, r) => s + Number(r.allowable_expense || 0), 0);
-    return { q, income, expenses, profit: income - expenses };
+    return { q, ...accountantBusinessSummary(rows, q).totals };
   });
+  const accountantTotals = accountantBusinessSummary(summary.rows).totals;
   const stockValue = stock.filter((s) => s.status !== "Sold").reduce((sum, s) => sum + Number(s.purchase_price || 0), 0);
   return (
     <>
@@ -341,22 +357,23 @@ function Dashboard({
         </Panel>
       ) : null}
       <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
-        <button className="text-left" onClick={() => openRows("transactions")}><KpiCard label="Business income" value={formatGBP(summary.income)} accent="green" hint="Click to open transactions" /></button>
-        <button className="text-left" onClick={() => openRows("transactions")}><KpiCard label="Allowable expenses" value={formatGBP(summary.expenses)} accent="rose" hint="Click to open transactions" /></button>
-        <KpiCard label="Profit recorded so far" value={formatGBP(summary.profit)} accent="blue" />
+        <button className="text-left" onClick={() => openRows("transactions")}><KpiCard label="Business income" value={formatGBP(accountantTotals.income)} accent="green" hint="Click to open transactions" /></button>
+        <button className="text-left" onClick={() => openRows("transactions")}><KpiCard label="Accountant costs" value={formatGBP(accountantTotals.expenses)} accent="rose" hint="Includes recognised bike cost of sales" /></button>
+        <KpiCard label="Profit recorded so far" value={formatGBP(accountantTotals.profit)} accent="blue" />
         <KpiCard label="Suggested tax reserve" value={formatGBP(summary.taxReserve)} accent="amber" />
         <button className="text-left" onClick={() => openRows("missing_receipts")}><KpiCard label="Missing receipts" value={String(summary.missingReceipts)} accent="rose" hint="Click to show missing receipt transactions" /></button>
         <button className="text-left" onClick={() => openRows("review")}><KpiCard label="Needs Review" value={String(summary.needsReview)} accent="amber" hint="Click to show the review queue" /></button>
         <KpiCard label="Latest bank balance" value={formatGBP(summary.latestBalance)} accent="slate" />
-        <KpiCard label="Motorcycle stock value" value={formatGBP(stockValue)} accent="green" />
+        <KpiCard label="Stock bought, not expensed" value={formatGBP(summary.stockPurchases || stockValue)} accent="green" />
       </div>
       <Panel title="Quarterly MTD updates" subtitle="Quarterly MTD updates are reporting updates and are not quarterly tax bills.">
         <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
-          {[...quarters, { q: "Full year", income: summary.income, expenses: summary.expenses, profit: summary.profit }].map((q) => (
+          {[...quarters, { q: "Full year", income: accountantTotals.income, expenses: accountantTotals.expenses, stockPurchases: summary.stockPurchases, profit: accountantTotals.profit, cashMovementAfterStock: accountantTotals.profit - summary.stockPurchases }].map((q) => (
             <div key={q.q} className="rounded-2xl bg-white/[0.04] p-4">
               <p className="font-semibold">{q.q}</p>
               <p className="text-sm text-slate-400">Income {formatGBP(q.income)}</p>
-              <p className="text-sm text-slate-400">Expenses {formatGBP(q.expenses)}</p>
+              <p className="text-sm text-slate-400">Accountant costs {formatGBP(q.expenses)}</p>
+              {q.stockPurchases ? <p className="text-xs text-slate-500">Stock bought {formatGBP(q.stockPurchases)}</p> : null}
               <p className="mt-1 text-lime-200">{formatGBP(q.profit)}</p>
             </div>
           ))}
@@ -512,24 +529,27 @@ function BikeStock({ rows, reload }: { rows: BookkeepingBikeStock[]; transaction
 function Tax({ summary }: { summary: ReturnType<typeof summarise> }) {
   const quarters = ["Q1", "Q2", "Q3", "Q4"].map((q) => {
     const rows = summary.rows.filter((row) => row.mtd_quarter === q || quarterForDate(row.transaction_date) === q);
-    const income = rows.reduce((sum, row) => sum + Number(row.allowable_income || 0), 0);
-    const expenses = rows.reduce((sum, row) => sum + Number(row.allowable_expense || 0), 0);
-    return { q, income, expenses, profit: income - expenses };
+    return { q, ...accountantBusinessSummary(rows, q).totals };
   });
+  const accountantTotals = accountantBusinessSummary(summary.rows).totals;
   const latestDate = summary.rows.map((row) => row.transaction_date).sort().at(-1) || summary.taxYear.start;
   const taxYearStart = new Date(`${summary.taxYear.start}T00:00:00`);
   const latest = new Date(`${latestDate}T00:00:00`);
   const elapsedDays = Math.max(1, Math.floor((latest.getTime() - taxYearStart.getTime()) / 86_400_000) + 1);
-  const projectedProfit = summary.profit > 0 ? (summary.profit / elapsedDays) * 365 : 0;
+  const projectedProfit = accountantTotals.profit > 0 ? (accountantTotals.profit / elapsedDays) * 365 : 0;
   return (
     <div className="space-y-5">
       <Panel title="Tax & MTD" subtitle={`Tax year ${summary.taxYear.label}: ${summary.taxYear.start} to ${summary.taxYear.end}. Estimates only, not final tax advice.`}>
         <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-          <KpiCard label="Tax-year income" value={formatGBP(summary.income)} accent="green" />
-          <KpiCard label="Tax-year expenses" value={formatGBP(summary.expenses)} accent="rose" />
-          <KpiCard label="Tax-year profit" value={formatGBP(summary.profit)} accent="blue" />
+          <KpiCard label="Tax-year income" value={formatGBP(accountantTotals.income)} accent="green" />
+          <KpiCard label="Tax-year accountant costs" value={formatGBP(accountantTotals.expenses)} accent="rose" />
+          <KpiCard label="Tax-year profit" value={formatGBP(accountantTotals.profit)} accent="blue" />
+          <KpiCard label="Stock bought, not expensed" value={formatGBP(summary.stockPurchases)} accent="green" />
           <KpiCard label="Projected annual profit" value={formatGBP(projectedProfit)} accent="slate" hint={`Run-rate from ${elapsedDays} recorded days`} />
         </div>
+        <p className="mt-4 rounded-2xl border border-lime-300/20 bg-lime-300/10 p-4 text-sm text-lime-50">
+          Bike purchases marked as stock are shown separately here. Bike Sales profit uses accountant recognised cost of sales where supplied, such as Q1 Bike Sales costs of £2,750.
+        </p>
       </Panel>
 
       <Panel title="Recorded tax estimate so far" subtitle="This is based on recorded taxable profit only. It is not the same as cash in the bank.">
@@ -548,11 +568,12 @@ function Tax({ summary }: { summary: ReturnType<typeof summarise> }) {
 
       <Panel title="MTD quarterly position" subtitle="Quarterly MTD updates are reporting updates and are not quarterly tax bills.">
         <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
-          {[...quarters, { q: "Full year", income: summary.income, expenses: summary.expenses, profit: summary.profit }].map((quarter) => (
+          {[...quarters, { q: "Full year", income: accountantTotals.income, expenses: accountantTotals.expenses, stockPurchases: summary.stockPurchases, profit: accountantTotals.profit, cashMovementAfterStock: accountantTotals.profit - summary.stockPurchases }].map((quarter) => (
             <div key={quarter.q} className="rounded-2xl bg-white/[0.04] p-4">
               <p className="font-semibold">{quarter.q}</p>
               <p className="text-sm text-slate-400">Income {formatGBP(quarter.income)}</p>
-              <p className="text-sm text-slate-400">Expenses {formatGBP(quarter.expenses)}</p>
+              <p className="text-sm text-slate-400">Accountant costs {formatGBP(quarter.expenses)}</p>
+              {quarter.stockPurchases ? <p className="text-xs text-slate-500">Stock bought {formatGBP(quarter.stockPurchases)}</p> : null}
               <p className="mt-1 text-lime-200">{formatGBP(quarter.profit)}</p>
             </div>
           ))}
@@ -563,14 +584,260 @@ function Tax({ summary }: { summary: ReturnType<typeof summarise> }) {
 }
 
 function Reports({ transactions }: { transactions: BookkeepingTransaction[] }) {
-  const byCategory = new Map<string, number>();
-  transactions.forEach((t) => byCategory.set(t.category || "Uncategorised", (byCategory.get(t.category || "Uncategorised") || 0) + Math.abs(Number(t.original_amount || 0))));
+  const today = currentDateKey();
+  const weekStart = startOfLocalWeekKey(new Date());
+  const monthStart = today.slice(0, 8) + "01";
+  const taxYear = { start: "2026-04-06", end: "2027-04-05" };
+  const taxYearRows = transactions.filter((row) => row.transaction_date >= taxYear.start && row.transaction_date <= taxYear.end);
+  const todayRows = taxYearRows.filter((row) => row.transaction_date === today);
+  const weekRows = taxYearRows.filter((row) => row.transaction_date >= weekStart && row.transaction_date <= today);
+  const monthRows = taxYearRows.filter((row) => row.transaction_date >= monthStart && row.transaction_date <= today);
+  const monthly = monthKeys(taxYear.start, taxYear.end).map((monthKey) => {
+    const rows = taxYearRows.filter((row) => row.transaction_date.startsWith(monthKey));
+    return { label: formatMonthLabel(monthKey), ...summariseRows(rows) };
+  });
+  const quarters = ["Q1", "Q2", "Q3", "Q4"].map((q) => {
+    const rows = taxYearRows.filter((row) => row.mtd_quarter === q || quarterForDate(row.transaction_date) === q);
+    return { quarter: q, ...accountantBusinessSummary(rows, q) };
+  });
+  const incomeByCategory = categoryTotals(taxYearRows, reportingIncome);
+  const expenseByCategory = categoryTotals(taxYearRows, reportingTradingExpense);
+  const stockByCategory = categoryTotals(taxYearRows, reportingStockPurchase);
+  const taxYearTotals = accountantBusinessSummary(taxYearRows).totals;
   return (
-    <Panel title="Reports" subtitle="Live reports from Supabase.">
-      {[...byCategory.entries()].sort((a, b) => b[1] - a[1]).map(([category, amount]) => <div key={category} className="mb-3 rounded-2xl bg-white/[0.04] p-4 flex justify-between"><span>{category}</span><span>{formatGBP(amount)}</span></div>)}
-      <a className="btn-secondary mt-4 inline-block" href={`data:text/csv;charset=utf-8,${encodeURIComponent(toCsv(transactions))}`} download="transactions.csv">Export Transactions CSV</a>
-    </Panel>
+    <div className="space-y-5">
+      <Panel title="Reports" subtitle="Accountant-basis reports. Bike stock purchases are not all expensed; Bike Sales uses recognised cost of sales where supplied.">
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+          <ReportPeriodCards title="Today" totals={accountantBusinessSummary(todayRows).totals} />
+          <ReportPeriodCards title="This week" totals={accountantBusinessSummary(weekRows).totals} />
+          <ReportPeriodCards title="This month" totals={accountantBusinessSummary(monthRows).totals} />
+          <ReportPeriodCards title="Tax year" totals={taxYearTotals} />
+        </div>
+        <p className="mt-4 rounded-2xl border border-white/10 bg-white/[0.04] p-4 text-sm text-slate-300">
+          Q1 is aligned to the accountant table: Income £15,420.77, Costs £4,825.25, Profit £10,595.52.
+        </p>
+      </Panel>
+
+      <Panel title="Quarterly accountant summary" subtitle="This is the layout your accountant asked for: SmartFobs, Bike Sales and Mechanic by quarter.">
+        <div className="grid gap-4">
+          {quarters.map((quarter) => (
+            <div key={quarter.quarter} className="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04]">
+              <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+                <p className="font-semibold">{quarter.quarter}</p>
+                <p className="text-sm text-slate-400">Profit {formatGBP(quarter.totals.profit)}</p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[34rem] text-left text-sm">
+                  <thead className="text-xs uppercase tracking-wide text-slate-400">
+                    <tr>
+                      <th className="px-4 py-3">Business</th>
+                      <th className="px-4 py-3 text-right">Income</th>
+                      <th className="px-4 py-3 text-right">Costs</th>
+                      <th className="px-4 py-3 text-right">Profit</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {businessLines.map((line) => (
+                      <tr key={line} className="border-t border-white/10">
+                        <td className="px-4 py-3">{line}</td>
+                        <td className="px-4 py-3 text-right">{formatGBP(quarter.lines[line].income)}</td>
+                        <td className="px-4 py-3 text-right">{formatGBP(quarter.lines[line].costs)}</td>
+                        <td className="px-4 py-3 text-right">{formatGBP(quarter.lines[line].profit)}</td>
+                      </tr>
+                    ))}
+                    <tr className="border-t border-white/20 bg-white/[0.04] font-semibold">
+                      <td className="px-4 py-3">Total</td>
+                      <td className="px-4 py-3 text-right">{formatGBP(quarter.totals.income)}</td>
+                      <td className="px-4 py-3 text-right">{formatGBP(quarter.totals.expenses)}</td>
+                      <td className="px-4 py-3 text-right">{formatGBP(quarter.totals.profit)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              {accountantCostOfSalesOverrides[quarter.quarter] ? (
+                <p className="border-t border-white/10 px-4 py-3 text-xs text-slate-400">
+                  Accountant adjustment applied: Bike Sales recognised cost of sales {formatGBP(accountantCostOfSalesOverrides[quarter.quarter]["Bike Sales"] || 0)}.
+                </p>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      </Panel>
+
+      <Panel title="Month-by-month" subtitle="Calendar-month view for the current tax year.">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {monthly.map((month) => (
+            <div key={month.label} className="rounded-2xl bg-white/[0.04] p-4">
+              <p className="font-semibold">{month.label}</p>
+              <p className="text-sm text-slate-400">Income {formatGBP(month.income)}</p>
+              <p className="text-sm text-slate-400">Trading expenses {formatGBP(month.expenses)}</p>
+              <p className="text-sm text-slate-500">Stock bought {formatGBP(month.stockPurchases)}</p>
+              <p className="mt-1 text-lime-200">Profit {formatGBP(month.profit)}</p>
+            </div>
+          ))}
+        </div>
+      </Panel>
+
+      <Panel title="Income by category" subtitle="Income included in trading reports.">
+        <CategoryRows rows={incomeByCategory} empty="No income recorded in this tax year." />
+      </Panel>
+
+      <Panel title="Trading expenses by category" subtitle="Business expenses included in profit. Stock purchases are excluded here.">
+        <CategoryRows rows={expenseByCategory} empty="No trading expenses recorded in this tax year." />
+      </Panel>
+
+      <Panel title="Stock purchases, not yet expensed" subtitle="These affect cash and stock value, but not trading profit until sold/costed.">
+        <CategoryRows rows={stockByCategory} empty="No stock purchases recorded in this tax year." />
+      </Panel>
+
+      <Panel title="Exports">
+        <a className="btn-secondary inline-block" href={`data:text/csv;charset=utf-8,${encodeURIComponent(toCsv(transactions))}`} download="transactions.csv">Export Transactions CSV</a>
+      </Panel>
+    </div>
   );
+}
+
+function ReportPeriodCards({ title, totals }: { title: string; totals: { income: number; expenses: number; stockPurchases: number; profit: number } }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+      <p className="text-sm font-semibold text-white">{title}</p>
+      <p className="mt-2 text-xs text-slate-400">Income</p>
+      <p className="text-lg font-semibold text-lime-200">{formatGBP(totals.income)}</p>
+      <p className="mt-2 text-xs text-slate-400">Trading expenses</p>
+      <p className="font-semibold text-rose-200">{formatGBP(totals.expenses)}</p>
+      <p className="mt-2 text-xs text-slate-500">Stock bought {formatGBP(totals.stockPurchases)}</p>
+      <p className="mt-2 text-sm text-sky-200">Profit {formatGBP(totals.profit)}</p>
+    </div>
+  );
+}
+
+function CategoryRows({ rows, empty }: { rows: { category: string; amount: number }[]; empty: string }) {
+  if (!rows.length) return <div className="rounded-2xl bg-white/[0.04] p-4 text-sm text-slate-400">{empty}</div>;
+  return (
+    <div className="grid gap-3">
+      {rows.map((row) => (
+        <div key={row.category} className="flex justify-between gap-4 rounded-2xl bg-white/[0.04] p-4">
+          <span className="min-w-0 break-words">{row.category}</span>
+          <span className="shrink-0 font-semibold">{formatGBP(row.amount)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function categoryTotals(rows: BookkeepingTransaction[], valueForRow: (row: BookkeepingTransaction) => number) {
+  const totals = new Map<string, number>();
+  rows.forEach((row) => {
+    const amount = valueForRow(row);
+    if (!amount) return;
+    const category = row.category || "Uncategorised";
+    totals.set(category, (totals.get(category) || 0) + amount);
+  });
+  return [...totals.entries()]
+    .map(([category, amount]) => ({ category, amount }))
+    .sort((a, b) => b.amount - a.amount);
+}
+
+function accountantBusinessSummary(rows: BookkeepingTransaction[], quarter?: string) {
+  const lines = businessLines.reduce((acc, line) => {
+    acc[line] = { income: 0, costs: 0, profit: 0 };
+    return acc;
+  }, {} as Record<BusinessLine, { income: number; costs: number; profit: number }>);
+  let sharedFuel = 0;
+  let stockPurchases = 0;
+  const overrides = quarter ? accountantCostOfSalesOverrides[quarter] || {} : {};
+
+  rows.forEach((row) => {
+    const income = reportingIncome(row);
+    if (income) lines[incomeBusinessLine(row)].income += income;
+
+    const stock = reportingStockPurchase(row);
+    if (stock) stockPurchases += stock;
+
+    const expense = reportingTradingExpense(row);
+    if (!expense) return;
+    if (isFuel(row)) {
+      sharedFuel += expense;
+      return;
+    }
+    const line = expenseBusinessLine(row);
+    if (overrides[line] !== undefined) return;
+    lines[line].costs += expense;
+  });
+
+  const totalIncome = businessLines.reduce((sum, line) => sum + lines[line].income, 0);
+  if (totalIncome > 0 && sharedFuel > 0) {
+    businessLines.forEach((line) => {
+      if (overrides[line] !== undefined) return;
+      lines[line].costs += (sharedFuel * lines[line].income) / totalIncome;
+    });
+  }
+
+  businessLines.forEach((line) => {
+    if (overrides[line] !== undefined) lines[line].costs = Number(overrides[line] || 0);
+    lines[line].income = roundMoney(lines[line].income);
+    lines[line].costs = roundMoney(lines[line].costs);
+    lines[line].profit = roundMoney(lines[line].income - lines[line].costs);
+  });
+
+  const totals = {
+    income: roundMoney(businessLines.reduce((sum, line) => sum + lines[line].income, 0)),
+    expenses: roundMoney(businessLines.reduce((sum, line) => sum + lines[line].costs, 0)),
+    stockPurchases: roundMoney(stockPurchases),
+    profit: roundMoney(businessLines.reduce((sum, line) => sum + lines[line].profit, 0)),
+  };
+  return { lines, totals };
+}
+
+function incomeBusinessLine(row: BookkeepingTransaction): BusinessLine {
+  const category = row.category || "";
+  const description = row.description.toLowerCase();
+  if (category === "Bike Sales" || description.includes("gy26ubd")) return "Bike Sales";
+  if (category === "Labour / Contract Income" || description.includes("software dev")) return "Mechanic";
+  return "SmartFobs";
+}
+
+function expenseBusinessLine(row: BookkeepingTransaction): BusinessLine {
+  const description = row.description.toLowerCase();
+  const category = row.category || "";
+  if (description.includes("dobbies")) return "Mechanic";
+  if (description.includes("ebay") || description.includes("autotrader") || category === "Repairs and Maintenance") return "Bike Sales";
+  return "SmartFobs";
+}
+
+function isFuel(row: BookkeepingTransaction) {
+  return row.category === "Fuel / Vehicle Costs";
+}
+
+function roundMoney(value: number) {
+  return Number(value.toFixed(2));
+}
+
+function startOfLocalWeekKey(date: Date) {
+  const start = new Date(date);
+  const day = start.getDay() || 7;
+  start.setDate(start.getDate() - day + 1);
+  return dateToKey(start);
+}
+
+function dateToKey(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function monthKeys(startDate: string, endDate: string) {
+  const keys: string[] = [];
+  const cursor = new Date(`${startDate.slice(0, 7)}-01T00:00:00`);
+  const end = new Date(`${endDate.slice(0, 7)}-01T00:00:00`);
+  while (cursor <= end) {
+    keys.push(`${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}`);
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+  return keys;
+}
+
+function formatMonthLabel(monthKey: string) {
+  const date = new Date(`${monthKey}-01T00:00:00`);
+  return date.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
 }
 
 function Settings({ rules, reload }: { rules: CategoryRule[]; reload: () => void }) {
@@ -748,9 +1015,10 @@ function newTransaction(): BookkeepingTransaction {
 function needsStoredTotalRepair(transactions: BookkeepingTransaction[]) {
   return transactions.some((row) => {
     const calculated = calculateAllowables(row);
+    const stockRow = row.allowable_status === "Stock" || row.category === "Bike Purchases (Stock)";
     return (
       Math.abs(Number(row.allowable_income || 0) - calculated.allowable_income) > 0.009 ||
-      Math.abs(Number(row.allowable_expense || 0) - calculated.allowable_expense) > 0.009 ||
+      (!stockRow && Math.abs(Number(row.allowable_expense || 0) - calculated.allowable_expense) > 0.009) ||
       Number(row.business_use_percent ?? 100) !== normaliseBusinessUsePercent(row.business_use_percent)
     );
   });

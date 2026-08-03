@@ -84,13 +84,57 @@ export function calculateAllowables(row: Partial<BookkeepingTransaction>) {
   const allowableExpense =
     direction === "Expense" &&
     (businessStatus === "Business" || businessStatus === "Mixed") &&
-    (allowableStatus === "Yes" || allowableStatus === "Stock")
+    allowableStatus === "Yes"
       ? Math.abs(Math.min(amount, 0)) * useRatio
       : 0;
 
   return {
     allowable_income: Number(allowableIncome.toFixed(2)),
     allowable_expense: Number(allowableExpense.toFixed(2)),
+  };
+}
+
+export function isStockPurchase(row: Partial<BookkeepingTransaction>) {
+  return row.allowable_status === "Stock" || row.category === "Bike Purchases (Stock)";
+}
+
+function calculatedOrStored(row: BookkeepingTransaction) {
+  const existingIncome = Number(row.allowable_income || 0);
+  const existingExpense = Number(row.allowable_expense || 0);
+  if (existingIncome || existingExpense) return { allowable_income: existingIncome, allowable_expense: existingExpense };
+  return calculateAllowables(row);
+}
+
+export function reportingIncome(row: BookkeepingTransaction) {
+  return calculatedOrStored(row).allowable_income;
+}
+
+export function reportingTradingExpense(row: BookkeepingTransaction) {
+  if (isStockPurchase(row)) return 0;
+  return calculatedOrStored(row).allowable_expense;
+}
+
+export function reportingStockPurchase(row: BookkeepingTransaction) {
+  if (!isStockPurchase(row)) return 0;
+  const amount = money(row.original_amount);
+  const direction = String(row.direction || (amount >= 0 ? "Income" : "Expense"));
+  const businessStatus = String(row.business_status || "Review");
+  const usePercent = normaliseBusinessUsePercent(row.business_use_percent);
+  const useRatio = Number.isFinite(usePercent) ? Math.max(0, Math.min(100, usePercent)) / 100 : 1;
+  if (direction !== "Expense" || (businessStatus !== "Business" && businessStatus !== "Mixed")) return 0;
+  return Number((Math.abs(Math.min(amount, 0)) * useRatio).toFixed(2));
+}
+
+export function summariseRows(rows: BookkeepingTransaction[]) {
+  const income = rows.reduce((sum, row) => sum + reportingIncome(row), 0);
+  const expenses = rows.reduce((sum, row) => sum + reportingTradingExpense(row), 0);
+  const stockPurchases = rows.reduce((sum, row) => sum + reportingStockPurchase(row), 0);
+  return {
+    income,
+    expenses,
+    stockPurchases,
+    profit: income - expenses,
+    cashMovementAfterStock: income - expenses - stockPurchases,
   };
 }
 
@@ -138,9 +182,8 @@ export function summarise(transactions: BookkeepingTransaction[]) {
     if (existingIncome || existingExpense) return row;
     return { ...row, ...calculateAllowables(row) };
   });
-  const income = normalisedRows.reduce((sum, row) => sum + Number(row.allowable_income || 0), 0);
-  const expenses = normalisedRows.reduce((sum, row) => sum + Number(row.allowable_expense || 0), 0);
-  const profit = income - expenses;
+  const reportTotals = summariseRows(normalisedRows);
+  const { income, expenses, stockPurchases, profit, cashMovementAfterStock } = reportTotals;
   const basicTaxable = Math.max(0, Math.min(profit, 50270) - 12570);
   const higherTaxable = Math.max(0, profit - 50270);
   const incomeTax = basicTaxable * 0.2 + higherTaxable * 0.4;
@@ -150,7 +193,9 @@ export function summarise(transactions: BookkeepingTransaction[]) {
     rows: normalisedRows,
     income,
     expenses,
+    stockPurchases,
     profit,
+    cashMovementAfterStock,
     incomeTax,
     class4,
     taxReserve: incomeTax + class4,
