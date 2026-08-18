@@ -94,7 +94,7 @@ export default function Page() {
               </div>
             </div>
           </div>
-          <div className="site-shell trust-strip">
+          <dl className="site-shell trust-strip">
             <div>
               <dt>Specialist keyless systems</dt>
               <dd>Smart key programming, PIN recovery and SCU/ECU data services.</dd>
@@ -107,7 +107,7 @@ export default function Page() {
               <dt>Clear postal process</dt>
               <dd>Identify the service, send the required component, receive it back ready for the next step.</dd>
             </div>
-          </div>
+          </dl>
         </section>
 
         <section className="section-band" id="find-service">
@@ -125,7 +125,7 @@ export default function Page() {
                 <div className="manufacturer-image">
                   <Image
                     src={maker.image}
-                    alt={`${maker.name} smart key service`}
+                    alt={`${maker.name} smart key fob and keyless system service image`}
                     fill
                     sizes="(max-width: 900px) 50vw, 25vw"
                   />
@@ -171,7 +171,7 @@ export default function Page() {
               <li>
                 <span className="step-number">01</span>
                 <strong>Identify your motorcycle and service.</strong>
-                <span>Choose the manufacturer page, product or contact route.</span>
+                <span>Choose your manufacturer, product or contact Smartfobs with your model details.</span>
               </li>
               <li>
                 <span className="step-number">02</span>
@@ -181,12 +181,12 @@ export default function Page() {
               <li>
                 <span className="step-number">03</span>
                 <strong>Smartfobs completes the programming or data work.</strong>
-                <span>PIN recovery, keycode recovery, fob preparation and programming are handled according to the selected service.</span>
+                <span>PIN recovery, keycode recovery, fob preparation and programming are handled for supported systems.</span>
               </li>
               <li>
                 <span className="step-number">04</span>
                 <strong>Components are returned ready for the next step.</strong>
-                <span>Parts are sent back for reinstallation or pairing as appropriate for the model.</span>
+                <span>Parts are sent back for reinstallation or pairing as appropriate for the supported model.</span>
               </li>
             </ol>
           </div>
@@ -257,12 +257,12 @@ export default function Page() {
 
         <section className="evidence-section">
           <div className="site-shell section-heading">
-            <p className="eyebrow">Trust evidence</p>
-            <h2>Real Smartfobs services, parts and postal workflow.</h2>
+            <p className="eyebrow">Why customers use Smartfobs</p>
+            <h2>Specialist keyless support with a clear postal process.</h2>
             <p>
-              The homepage uses existing Smartfobs service imagery and factual
-              service routes rather than invented awards, counts or review
-              claims.
+              Smartfobs focuses on motorcycle and scooter smart-key systems,
+              with model-specific guidance before customers remove or post any
+              electronics.
             </p>
           </div>
           <div className="site-shell evidence-grid">
@@ -271,7 +271,7 @@ export default function Page() {
                 <div className="evidence-image">
                   <Image
                     src={item.image}
-                    alt={item.title}
+                    alt={`${item.title} at Smartfobs`}
                     fill
                     sizes="(max-width: 900px) 100vw, 33vw"
                   />
@@ -295,7 +295,7 @@ export default function Page() {
               <h3>I have lost all smart keys. What happens first?</h3>
               <p>
                 Send your bike make, model and year. Smartfobs can confirm the
-                likely route and what needs to be sent before you post anything.
+                likely service and what needs to be sent before you post anything.
               </p>
             </article>
             <article>

@@ -718,7 +718,7 @@ body {
 }
 
 .guide-card span {
-  color: #f04a59;
+  color: #ff8a93;
   font-size: 0.72rem;
   font-weight: 900;
   letter-spacing: 0.11em;
@@ -890,6 +890,10 @@ body {
   color: #c9c4ba;
   font-style: normal;
   line-height: 1.7;
+}
+
+.site-footer address span {
+  display: block;
 }
 
 .site-footer a {

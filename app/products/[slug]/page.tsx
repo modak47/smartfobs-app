@@ -55,9 +55,9 @@ export default async function Page({ params }: { params: Promise<{ slug: string 
       <PublicPageShell
         eyebrow={product?.maker ?? "Smartfobs"}
         title={title}
-        description={`${price}. This preview keeps the current product URL available while checkout remains on the existing live Shopify site.`}
+        description={`${price}. Confirm compatibility with Smartfobs before sending any components.`}
         body={[
-          "This first Next.js phase establishes the public product route and SEO surface without connecting Shopify checkout or changing the live store.",
+          "This service is for supported motorcycle and scooter smart-key systems.",
           "Before ordering or sending components, confirm the exact make, model, year and key situation with Smartfobs.",
         ]}
         links={[

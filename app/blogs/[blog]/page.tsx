@@ -33,7 +33,7 @@ export default function Page() {
           <div className="site-shell">
             <p className="eyebrow">Technical guides</p>
             <h1>Smartfobs Blog</h1>
-            <p>Helpful public guides from the existing Smartfobs site, ready for fuller article migration in the next phase.</p>
+            <p>Helpful Smartfobs guides for smart-key batteries, emergency PIN procedures, pairing and lost key situations.</p>
           </div>
         </section>
         <section className="site-shell content-page">

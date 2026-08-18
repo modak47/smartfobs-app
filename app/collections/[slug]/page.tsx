@@ -54,7 +54,7 @@ export default async function Page({ params }: { params: Promise<{ slug: string 
           <div className="site-shell">
             <p className="eyebrow">Collection</p>
             <h1>{title}</h1>
-            <p>Browse the priority Smartfobs service routes prepared for this first Next.js preview.</p>
+            <p>Browse Smartfobs smart-key programming, lost-key recovery and PIN recovery services for supported models.</p>
           </div>
         </section>
         <section className="site-shell product-section">

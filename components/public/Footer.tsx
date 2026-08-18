@@ -24,13 +24,17 @@ export function PublicFooter() {
         <div>
           <h3>Contact</h3>
           <a href={`mailto:${contact.email}`}>{contact.email}</a>
-          <a href={`tel:${contact.phone}`}>{contact.phone}</a>
-          <address>{contact.address.join(", ")}</address>
+          <a href={`tel:${contact.phoneHref}`}>{contact.phone}</a>
+          <address>
+            {contact.address.map((line) => (
+              <span key={line}>{line}</span>
+            ))}
+          </address>
         </div>
       </div>
       <div className="site-shell footer-bottom">
         <span>© 2026 Smartfobs</span>
-        <Link href="/app">Internal app</Link>
+        <Link href="/pages/contact">Contact Smartfobs</Link>
       </div>
     </footer>
   );

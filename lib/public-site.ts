@@ -2,8 +2,9 @@ export const siteUrl = "https://smartfobs.co.uk";
 
 export const contact = {
   email: "smartfobs@gmail.com",
-  phone: "07904443965",
-  address: ["Smartfobs", "102 Wolseley road", "Brighton", "BN1 9ET"],
+  phone: "07904 443965",
+  phoneHref: "+447904443965",
+  address: ["Smartfobs", "102 Wolseley Road", "Brighton", "BN1 9ET", "United Kingdom"],
 };
 
 export const navigation = [
@@ -24,7 +25,7 @@ export const manufacturerCards = [
       "https://smartfobs.co.uk/cdn/shop/files/all_lost_keys-smart_key_remote_fob_pcx_k1b.jpg?v=1783678826&width=750",
     models: "PCX, SH, Forza, X-ADV, ADV, Vision",
     summary:
-      "Smart key programming, lost-key recovery and keycode restoration for Honda keyless motorcycles and scooters.",
+      "Smart key programming, lost-key recovery and keycode restoration for supported Honda keyless motorcycles and scooters.",
   },
   {
     name: "Yamaha",
@@ -33,7 +34,7 @@ export const manufacturerCards = [
       "https://smartfobs.co.uk/cdn/shop/files/all_lost_keys-smart_key_remote_fob_nmax_xmax.jpg?v=1749931096&width=750",
     models: "NMAX, XMAX, Tricity, TMAX, MT-09 SP",
     summary:
-      "Yamaha smart key and immobiliser PIN recovery services for current keyless scooter and motorcycle systems.",
+      "Yamaha smart key and immobiliser PIN recovery services for supported scooter and motorcycle keyless systems.",
   },
   {
     name: "Suzuki",
@@ -60,13 +61,13 @@ export const services = [
     title: "All Keys Lost",
     kicker: "Recovery",
     href: "/collections/all",
-    text: "Recover access when every smart key or code is missing, using the model-specific SCU or ECU data route.",
+    text: "Recover access on supported models when every smart key or code is missing.",
   },
   {
     title: "Smart Key Programming",
     kicker: "Programming",
     href: "/pages/honda-smart-key-programming",
-    text: "Pair replacement smart fobs for Honda, Yamaha, Suzuki and Piaggio/Vespa keyless systems.",
+    text: "Pair replacement smart fobs for supported Honda, Yamaha, Suzuki and Piaggio/Vespa keyless systems.",
   },
   {
     title: "PIN Code Recovery",
@@ -78,13 +79,13 @@ export const services = [
     title: "Replacement Smart Fobs",
     kicker: "Remotes",
     href: "/collections/all",
-    text: "Source or prepare compatible remotes for supported motorcycles and scooters.",
+    text: "Source or prepare compatible remotes for supported motorcycle and scooter systems.",
   },
   {
     title: "SCU / ECU Services",
     kicker: "Electronics",
     href: "/pages/scu-location",
-    text: "Read and restore data from Smart Controller Units or ECUs sent by tracked post.",
+    text: "Read and restore supported Smart Controller Unit or ECU data sent by tracked post.",
   },
 ];
 
@@ -178,22 +179,22 @@ export const guides = [
 
 export const trustEvidence = [
   {
-    title: "Smart fob and PIN work",
+    title: "PIN recovery from original smart keys",
     image:
       "https://smartfobs.co.uk/cdn/shop/files/Screenshot_2025-01-05_104305.png?v=1749929199&width=750",
-    text: "PIN recovery from original smart keys is an existing Smartfobs service for supported Honda, Yamaha and Suzuki systems.",
+    text: "For supported Honda, Yamaha and Suzuki systems, Smartfobs can recover or read the original PIN code directly from an original smart key fob.",
   },
   {
-    title: "Model-specific lost-key services",
+    title: "Model-specific smart key services",
     image:
       "https://smartfobs.co.uk/cdn/shop/files/all_lost_keys-smart_key_remote_fob_pcx_k1b.jpg?v=1783678826&width=750",
-    text: "The live product catalogue includes model-specific services for Honda PCX, SH, Forza, Yamaha NMAX/XMAX and Suzuki GSX-R125 routes.",
+    text: "Customers can choose services for supported Honda PCX, SH, Forza, Yamaha NMAX/XMAX and Suzuki GSX-R125 keyless models.",
   },
   {
-    title: "Postal component route",
+    title: "Clear postal component process",
     image:
       "https://smartfobs.co.uk/cdn/shop/files/all_lost_keys-smart_key_remote_fob_nmax_xmax.jpg?v=1749931096&width=750",
-    text: "Customers send the required SCU, ECU or smart fob by tracked post depending on model and service.",
+    text: "Smartfobs confirms whether the SCU, ECU or original smart fob is required before customers send components by tracked post.",
   },
 ];
 
@@ -228,10 +229,10 @@ export const routeContent: Record<
   "honda-smart-key-programming": {
     title: "Honda Motorcycle Smart Key Programming & PIN Code Recovery",
     description:
-      "Specialist Honda smart key programming, keycode recovery and SCU/ECU data services for PCX, SH, Forza, X-ADV, ADV and other keyless models.",
+      "Specialist Honda smart key programming, keycode recovery and SCU/ECU data services for supported PCX, SH, Forza, X-ADV, ADV and other keyless models.",
     body: [
-      "Smartfobs provides smart key programming for Honda motorcycles and scooters equipped with factory keyless ignition systems.",
-      "Supported model families include PCX, SH 125/150/300/350, SH Mode, Vision, Forza, X-ADV, ADV 350, Airblade, Click, Lead, Vario and related Honda keyless systems.",
+      "Smartfobs provides smart key programming for supported Honda motorcycles and scooters equipped with factory keyless ignition systems.",
+      "Supported Honda model families include PCX, SH 125/150/300/350, SH Mode, Vision, Forza, X-ADV, ADV 350, Airblade, Click, Lead, Vario and related keyless systems.",
     ],
     links: [
       { label: "Honda products", href: "/collections/honda-products" },
@@ -244,7 +245,7 @@ export const routeContent: Record<
       "Yamaha smart key programming, immobiliser PIN recovery and ECU/SCU data extraction for NMAX, XMAX, Tricity, TMAX and supported keyless models.",
     body: [
       "Smartfobs supports Yamaha keyless ignition systems with lost-key programming, PIN recovery and replacement smart-key preparation.",
-      "Supported model families shown on the current site include Aerox, Grande, Free Go, Janus, NMAX, XMAX, QBIX, Tricity, TMAX and MT-09 SP.",
+      "Supported Yamaha model families include Aerox, Grande, Free Go, Janus, NMAX, XMAX, QBIX, Tricity, TMAX and MT-09 SP.",
     ],
     links: [
       { label: "Yamaha products", href: "/collections/yamaha-products" },
@@ -254,10 +255,10 @@ export const routeContent: Record<
   "suzuki-smart-key-programming": {
     title: "Suzuki Smart Key Programming & PIN Code Recovery",
     description:
-      "Suzuki ECU/SCU recovery and smart key pairing for supported keyless motorcycles and scooters including GSX-R125 and Raider 150.",
+      "Suzuki ECU/SCU recovery and smart key pairing for supported keyless motorcycles and scooters, including GSX-R125 and Raider 150 systems where applicable.",
     body: [
       "Smartfobs provides Suzuki smart key programming and immobiliser PIN support for supported keyless motorcycle systems.",
-      "The current public site highlights Suzuki GSX-R125, Raider 150 and GSX-R125 smart key models through to 2025.",
+      "Supported Suzuki keyless models include GSX-R125 and Raider 150 systems where the service applies.",
     ],
     links: [
       { label: "Suzuki products", href: "/collections/suzuki-products" },
@@ -269,7 +270,7 @@ export const routeContent: Record<
     description:
       "Postal smart key programming route for supported Piaggio and Vespa keyless systems.",
     body: [
-      "Smartfobs is structured to support Piaggio and Vespa smart key programming information alongside Honda, Yamaha and Suzuki services.",
+      "Smartfobs supports Piaggio and Vespa smart key programming enquiries alongside Honda, Yamaha and Suzuki services.",
       "Customers should confirm the exact model, year and key situation before sending any component.",
     ],
     links: [{ label: "Contact Smartfobs", href: "/pages/contact" }],
@@ -300,7 +301,7 @@ export const routeContent: Record<
       "Model-specific help for finding the Smart Controller Unit before sending parts to Smartfobs.",
     body: [
       "SCU and ECU locations vary between manufacturers and models.",
-      "This route is preserved for detailed model-by-model location guidance as the content migration continues.",
+      "Check the correct location guidance for your supported model before removing or posting any component.",
     ],
     links: [{ label: "What to send", href: "/pages/what-to-send" }],
   },
@@ -330,7 +331,7 @@ export const routeContent: Record<
   contact: {
     title: "Contact Smartfobs",
     description:
-      "Contact Smartfobs for motorcycle smart key programming, PIN recovery and all-keys-lost support.",
+      "Contact Smartfobs for supported motorcycle smart key programming, PIN recovery and all-keys-lost support.",
     body: [
       `Email ${contact.email} or call ${contact.phone}.`,
       "Include your motorcycle or scooter make, model, year, country and whether you have any working smart keys or PIN code.",

@@ -70,10 +70,10 @@ export default async function Page({
       <PublicPageShell
         eyebrow="Technical guide"
         title={guide.title}
-        description="This article route is preserved for the Next.js preview. Full article content migration is planned for the next phase."
+        description={`${guide.title} from the Smartfobs technical guide library.`}
         body={[
           "Smartfobs guides help customers understand smart-key batteries, emergency PIN procedures, lost fob situations and pairing steps.",
-          "The current first phase preserves the guide URL and page metadata while the detailed article body is migrated carefully from the live public site.",
+          "For model-specific help, confirm your motorcycle or scooter make, model and year before removing parts or ordering a service.",
         ]}
         links={[
           { label: "All guides", href: "/blogs/blog" },
