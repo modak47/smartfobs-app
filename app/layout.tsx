@@ -13,13 +13,38 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "SmartFobs Business OS",
-  description: "DWB Trading bookkeeping, stock, mileage and tax dashboard.",
+  metadataBase: new URL("https://smartfobs.co.uk"),
+  title: {
+    default: "Motorcycle Smart Key & PIN Code Recovery | Smartfobs",
+    template: "%s | Smartfobs",
+  },
+  description:
+    "Smartfobs provides motorcycle and scooter smart key programming, all-keys-lost recovery, immobiliser PIN recovery and SCU/ECU data services for Honda, Yamaha, Suzuki and Piaggio/Vespa.",
+  alternates: {
+    canonical: "/",
+    languages: {
+      "en-GB": "/",
+      "en-US": "/en-us/",
+      "en-EU": "/en-eu/",
+    },
+  },
+  openGraph: {
+    title: "Motorcycle Smart Key & PIN Code Recovery | Smartfobs",
+    description:
+      "Specialist smart-key programming, PIN recovery and SCU/ECU services for Honda, Yamaha, Suzuki and Piaggio/Vespa motorcycles and scooters.",
+    url: "/",
+    siteName: "Smartfobs",
+    locale: "en_GB",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Motorcycle Smart Key & PIN Code Recovery | Smartfobs",
+    description:
+      "Specialist smart-key programming, PIN recovery and SCU/ECU services for keyless motorcycles and scooters.",
+  },
   icons: {
-    icon: [
-      { url: "/favicon.ico" },
-      { url: "/favicon.png", type: "image/png" },
-    ],
+    icon: [{ url: "/favicon.png", type: "image/png" }],
     apple: [{ url: "/apple-touch-icon.png" }],
   },
 };
